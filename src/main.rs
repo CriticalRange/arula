@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -125,7 +125,7 @@ async fn run_app(
     loop {
 
         // Draw UI
-        terminal.draw(|f| layout.render(f, &app, &app.messages, &app.input, app.input_mode))?;
+        terminal.draw(|f| layout.render(f, &app, &app.messages))?;
 
         // Handle events with shorter timeout for better responsiveness
         let timeout = Duration::from_millis(50); // Very responsive to input
@@ -133,26 +133,35 @@ async fn run_app(
         if crossterm::event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
-                    // Handle Ctrl+C for exit
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                        app.state = crate::app::AppState::Exiting;
-                        return Ok(());
+                    // Only handle key press events, ignore key release
+                    if key.kind != KeyEventKind::Press {
+                        continue;
                     }
 
-                    match key.code {
-                        KeyCode::Esc => {
-                            // Handle escape key differently based on context
-                            if app.input_mode {
-                                app.input_mode = false;
-                            } else if layout.settings_mode {
-                                layout.toggle_settings_mode(); // Exit settings mode
-                            } else {
-                                layout.toggle_settings_mode(); // Enter settings mode
-                            }
+                    // Handle Ctrl+C for exit
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                        // Check if already in exit confirmation
+                        if matches!(app.state, crate::app::AppState::Menu(crate::app::MenuType::ExitConfirmation)) {
+                            app.state = crate::app::AppState::Exiting;
+                            return Ok(());
+                        } else {
+                            // Show exit confirmation
+                            app.state = crate::app::AppState::Menu(crate::app::MenuType::ExitConfirmation);
+                            app.menu_selected = 0;
                         }
-                        _ => {
-                            // Only handle other keys if we're not in settings mode
-                            if !layout.settings_mode {
+                        continue;
+                    }
+
+                    // Check if we're in menu mode
+                    if matches!(app.state, crate::app::AppState::Menu(_)) {
+                        app.handle_menu_navigation(key);
+                    } else {
+                        match key.code {
+                            KeyCode::Esc => {
+                                // Open main menu
+                                app.state = crate::app::AppState::Menu(crate::app::MenuType::Main);
+                            }
+                            _ => {
                                 app.handle_key_event(key);
                             }
                         }
@@ -160,13 +169,13 @@ async fn run_app(
                 }
                 Event::Mouse(_) => {
                     // Mouse click - always enable input mode (more aggressive for Termux)
-                    if !layout.settings_mode {
+                    if app.state == crate::app::AppState::Chat {
                         app.input_mode = true;
                     }
                 }
                 Event::FocusGained => {
                     // Terminal gained focus - enable input mode
-                    if !layout.settings_mode {
+                    if app.state == crate::app::AppState::Chat {
                         app.input_mode = true;
                     }
                 }

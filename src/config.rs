@@ -25,6 +25,8 @@ impl Config {
             ai: AiConfig {
                 provider: "local".to_string(),
                 model: "default".to_string(),
+                api_url: "http://localhost:8080".to_string(),
+                api_key: "".to_string(),
             },
             git: GitConfig {
                 auto_commit: true,

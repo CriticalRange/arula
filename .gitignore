@@ -74,6 +74,7 @@ arula_workspace/
 # Local config files
 arula_config.yaml
 arula.log
+.arula/
 
 # Test and build artifacts
 test_results.md
