@@ -1,20 +1,19 @@
 use anyhow::Result;
 use git2::{Repository, BranchType, Status, StatusOptions};
-use indicatif::ProgressBar;
 use std::path::Path;
-use std::process::Command;
 use std::string::String;
+use crate::progress::ProgressHelper;
 
 pub struct GitOperations {
     repo: Option<Repository>,
-    progress_bar: Option<ProgressBar>,
+    progress: ProgressHelper,
 }
 
 impl std::fmt::Debug for GitOperations {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitOperations")
             .field("repo", &self.repo.is_some())
-            .field("progress_bar", &self.progress_bar.is_some())
+            .field("progress", &"ProgressHelper")
             .finish()
     }
 }
@@ -23,7 +22,7 @@ impl GitOperations {
     pub fn new() -> Self {
         Self {
             repo: None,
-            progress_bar: None,
+            progress: ProgressHelper::new(),
         }
     }
 
@@ -37,7 +36,7 @@ impl GitOperations {
         Ok(())
     }
 
-    pub fn get_current_branch(&self) -> Result<String> {
+    pub fn current_branch(&self) -> Result<String> {
         match &self.repo {
             Some(repo) => {
                 let head = repo.head()?;
@@ -107,7 +106,7 @@ impl GitOperations {
                 let mut branch = repo.find_branch(branch_name, BranchType::Local)?;
 
                 // Check if it's the current branch
-                let current_branch = self.get_current_branch()?;
+                let current_branch = self.current_branch()?;
                 if current_branch == branch_name {
                     return Err(anyhow::anyhow!("Cannot delete current branch. Switch to another branch first."));
                 }
@@ -121,7 +120,7 @@ impl GitOperations {
         }
     }
 
-    pub fn get_status(&self) -> Result<Vec<String>> {
+    pub fn status(&self) -> Result<Vec<String>> {
         match &self.repo {
             Some(repo) => {
                 let mut status_output = Vec::new();
@@ -246,51 +245,10 @@ impl GitOperations {
         }
     }
 
-    pub async fn run_git_command(&mut self, args: Vec<&str>) -> Result<String> {
-        let pb = ProgressBar::new_spinner();
-        pb.set_message("Running git command...");
-        self.progress_bar = Some(pb);
-
-        let args_owned: Vec<String> = args.iter().map(|&s| s.to_string()).collect();
-        let result = tokio::task::spawn_blocking(move || {
-            Command::new("git")
-                .args(&args_owned)
-                .output()
-        }).await;
-
-        if let Some(pb) = &mut self.progress_bar {
-            pb.finish();
-        }
-
-        match result {
-            Ok(output_result) => {
-                match output_result {
-                    Ok(output) => {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-
-                        if output.status.success() {
-                            Ok(stdout.to_string())
-                        } else {
-                            Err(anyhow::anyhow!("Git command failed: {}", stderr))
-                        }
-                    }
-                    Err(e) => Err(anyhow::anyhow!("Failed to run git command: {}", e))
-                }
-            }
-            Err(e) => Err(anyhow::anyhow!("Task failed: {}", e))
-        }
     }
-
-    pub fn is_repository(&self) -> bool {
-        self.repo.is_some()
-    }
-}
 
 impl Drop for GitOperations {
     fn drop(&mut self) {
-        if let Some(pb) = &mut self.progress_bar {
-            pb.finish();
-        }
+        self.progress.finish();
     }
 }
