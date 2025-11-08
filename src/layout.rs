@@ -230,6 +230,56 @@ impl Layout {
                 continue;
             }
 
+            // Handle ToolCall messages specially with a beautiful box
+            if msg.message_type == crate::chat::MessageType::ToolCall {
+                // Add tool call header
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("╭─", Style::default().fg(colors.info)),
+                    Span::styled(" 🔧 Tool Execution ", Style::default().fg(colors.info).add_modifier(Modifier::BOLD)),
+                    Span::styled("─╮", Style::default().fg(colors.info)),
+                ]));
+
+                // Parse the tool call JSON if available
+                if let Some(json_str) = &msg.tool_call_json {
+                    // Show the tool call JSON in a nice format
+                    lines.push(Line::from(Span::styled("│", Style::default().fg(colors.info))));
+                    for json_line in json_str.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(colors.info)),
+                            Span::styled(json_line, Style::default().fg(Color::Yellow)),
+                        ]));
+                    }
+                    lines.push(Line::from(Span::styled("│", Style::default().fg(colors.info))));
+                }
+
+                // Add separator
+                lines.push(Line::from(Span::styled("├─── Result ───", Style::default().fg(colors.info))));
+                lines.push(Line::from(Span::styled("│", Style::default().fg(colors.info))));
+
+                // Add result content
+                for content_line in msg.content.lines() {
+                    let result_color = if content_line.contains('✓') {
+                        colors.success
+                    } else if content_line.contains('✗') {
+                        colors.error
+                    } else {
+                        colors.text
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(colors.info)),
+                        Span::styled(content_line, Style::default().fg(result_color)),
+                    ]));
+                }
+
+                // Bottom border
+                lines.push(Line::from(Span::styled("│", Style::default().fg(colors.info))));
+                lines.push(Line::from(Span::styled("╰────────────────╯", Style::default().fg(colors.info))));
+                lines.push(Line::from("")); // Empty line for spacing
+                continue;
+            }
+
             // Get message color and prefix based on type
             let (prefix, msg_color) = match msg.message_type {
                 crate::chat::MessageType::User => ("◈ ", colors.success),
@@ -238,6 +288,7 @@ impl Layout {
                 crate::chat::MessageType::Success => ("✓ ", colors.success),
                 crate::chat::MessageType::Error => ("✗ ", colors.error),
                 crate::chat::MessageType::Info => ("ℹ ", colors.info),
+                crate::chat::MessageType::ToolCall => ("🔧 ", colors.info), // Fallback, shouldn't reach here
             };
 
             // For AI messages, parse markdown
@@ -281,10 +332,27 @@ impl Layout {
         }
 
         // Calculate content size for ScrollView
-        let base_content_height = lines.len() as u16;
+        // We need to account for text wrapping - estimate wrapped line count
+        let mut estimated_wrapped_lines = 0u16;
+        let available_width = area.width.saturating_sub(2); // Account for potential borders/padding
 
-        // Always ensure there's extra space for scrolling (add padding if needed)
-        let content_height = base_content_height.max(area.height + 10);
+        for line in &lines {
+            // Calculate how many visual lines this logical line will take when wrapped
+            let line_width: usize = line.spans.iter()
+                .map(|span| span.content.len())
+                .sum();
+
+            if line_width == 0 {
+                estimated_wrapped_lines += 1; // Empty lines
+            } else {
+                // Estimate wrapped lines (add 1 for each full width, round up)
+                let wrapped_count = ((line_width as u16 + available_width - 1) / available_width).max(1);
+                estimated_wrapped_lines = estimated_wrapped_lines.saturating_add(wrapped_count);
+            }
+        }
+
+        // Use the larger of: logical lines or estimated wrapped lines
+        let content_height = estimated_wrapped_lines.max(lines.len() as u16);
         let content_width = area.width;
 
         // Ensure content area is larger than viewport for scrolling

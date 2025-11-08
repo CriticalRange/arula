@@ -157,6 +157,8 @@ pub struct App {
     pub current_streaming_message: Option<String>,  // Track current streaming message
     pub conversation_manager: ConversationManager,
     pub show_input: bool,  // Control input area visibility
+    pub should_scroll_to_bottom: bool,  // Flag to trigger auto-scroll
+    pub should_execute_bash: bool,  // Flag to execute bash commands from AI response
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +206,7 @@ impl App {
             timestamp: Local::now(),
             message_type: MessageType::System,
             content: crate::art::generate_arula_logo(),
+            tool_call_json: None,
         };
 
         Ok(Self {
@@ -226,6 +229,8 @@ impl App {
             current_streaming_message: None,
             conversation_manager,
             show_input: true,  // Show input by default (user can toggle with ESC)
+            should_scroll_to_bottom: false,
+            should_execute_bash: false,
         })
     }
 
@@ -1168,7 +1173,10 @@ Architecture: {}",
                 let mut history = vec![
                     crate::api::ChatMessage {
                         role: "system".to_string(),
-                        content: format!("# Persistent Memory\n{}\n\n# Current Conversation\nYou are ARULA, an Autonomous AI CLI assistant. Use the persistent memory above to remember important context across sessions.", persistent_memory),
+                        content: format!(
+                            "You are ARULA, an AI assistant that can EXECUTE commands.\n\n## CRITICAL: YOU HAVE EXECUTION POWERS\n\nWhen user asks \"list directory\" → You execute it\nWhen user asks \"read file\" → You execute it\nWhen user asks \"use it\" → You execute it\n\nDO NOT just explain commands. EXECUTE THEM.\n\n## How to Execute\n\nPut commands in code blocks (```bash, ```shell, ```json - all work):\n\nUser: \"list this\"\nYou: \"```bash\nls -la\n```\"\n\n[System executes it automatically]\n\nUser: \"use it\" or \"do it\"\nYou: \"```bash\nls -la\n```\"\n\n## Available Tools:\n- bash: Run shell commands\n- read_file: Read files\n- write_file: Write files\n- list_dir: List directories\n\n## Rules:\n1. User asks → You execute (don't just explain)\n2. Use code blocks: ```bash or ```json\n3. Be brief, then show the command\n\nExample:\nUser: \"list directory\"\nYou: \"```bash\nls -la\n```\"\n\nThat's it. Execute, don't explain.\n\n{}",
+                            persistent_memory
+                        ),
                     }
                 ];
 
@@ -1197,7 +1205,10 @@ Architecture: {}",
                 vec![
                     crate::api::ChatMessage {
                         role: "system".to_string(),
-                        content: format!("# Persistent Memory\n{}\n\nYou are ARULA, an Autonomous AI CLI assistant.", persistent_memory),
+                        content: format!(
+                            "# Persistent Memory\n{}\n\nYou are ARULA, an Autonomous AI CLI assistant with REAL command execution capabilities.\n\n## YOUR CAPABILITIES\n\nYou CAN and SHOULD execute commands directly. You have full access to:\n- Execute shell commands\n- Read files\n- Write files  \n- List directories\n\nWhen the user asks you to do something, DO IT by calling the appropriate tool.\n\n## TOOL CALLING FORMAT (REQUIRED)\n\nIMPORTANT: Output raw JSON directly, NOT in code blocks.\n\nCorrect:\n{{ \"tool\": \"bash\", \"arguments\": {{ \"command\": \"ls -la\" }} }}\n\nWRONG:\n```json\n...\n```\n\n### Available Tools:\n\n1. **bash** - Execute shell commands\n   {{ \"tool\": \"bash\", \"arguments\": {{ \"command\": \"ls -la\" }} }}\n\n2. **read_file** - Read files\n   {{ \"tool\": \"read_file\", \"arguments\": {{ \"path\": \"README.md\" }} }}\n\n3. **write_file** - Write files\n   {{ \"tool\": \"write_file\", \"arguments\": {{ \"path\": \"test.txt\", \"content\": \"hello\" }} }}\n\n4. **list_dir** - List directories\n   {{ \"tool\": \"list_dir\", \"arguments\": {{ \"path\": \".\" }} }}\n\n## CRITICAL RULES:\n\n1. Output raw JSON directly - NO code blocks\n2. You CAN execute commands - do NOT say \"I cannot\"\n3. Format: {{ \"tool\": \"name\", \"arguments\": {{ ... }} }}\n\nREMEMBER: Raw JSON only, no code blocks.",
+                            persistent_memory
+                        ),
                     }
                 ]
             };
@@ -1277,6 +1288,7 @@ Architecture: {}",
                             // Start streaming - create initial empty message
                             self.current_streaming_message = Some(String::new());
                             self.add_message(MessageType::Arula, ""); // Empty message to start
+                            self.should_scroll_to_bottom = true;
                             // Keep thinking animation active during streaming
                         }
                         AiResponse::StreamChunk(chunk) => {
@@ -1284,11 +1296,13 @@ Architecture: {}",
                             if let Some(last_msg) = self.messages.last_mut() {
                                 if last_msg.message_type == MessageType::Arula {
                                     last_msg.content.push_str(&chunk);
+                                    self.should_scroll_to_bottom = true;  // Scroll during streaming
                                 }
                             } else {
                                 // Fallback if no Arula message exists
                                 self.current_streaming_message = Some(chunk.clone());
                                 self.add_message(MessageType::Arula, &chunk);
+                                self.should_scroll_to_bottom = true;
                             }
                             // Keep receiver active for more chunks
                         }
@@ -1297,12 +1311,42 @@ Architecture: {}",
                             self.current_streaming_message = None;
                             self.is_ai_thinking = false;
                             self.ai_response_rx = None;
+                            self.should_scroll_to_bottom = true;
+
+                            // Remove code blocks from AI message (they'll be shown in tool execution box)
+                            if let Some(last_msg) = self.messages.last_mut() {
+                                if last_msg.message_type == MessageType::Arula {
+                                    let cleaned = Self::remove_code_blocks(&last_msg.content);
+                                    // If cleaning left an empty message, add a default one
+                                    last_msg.content = if cleaned.is_empty() {
+                                        "Executing command...".to_string()
+                                    } else {
+                                        cleaned
+                                    };
+                                }
+                            }
+
+                            // Set flag to execute bash commands in the main loop
+                            self.should_execute_bash = true;
                         }
                         AiResponse::Success { response, usage: _ } => {
                             // Non-streaming success (fallback)
                             self.is_ai_thinking = false;
                             self.ai_response_rx = None;
-                            self.add_message(MessageType::Arula, &response);
+
+                            // Remove code blocks from response before displaying
+                            let cleaned_response = Self::remove_code_blocks(&response);
+                            // If cleaning left an empty message, add a default one
+                            let final_message = if cleaned_response.is_empty() {
+                                "Executing command..."
+                            } else {
+                                &cleaned_response
+                            };
+                            self.add_message(MessageType::Arula, final_message);
+                            self.should_scroll_to_bottom = true;
+
+                            // Set flag to execute bash commands in the main loop
+                            self.should_execute_bash = true;
                         }
                         AiResponse::Error(error_msg) => {
                             // Handle errors
@@ -1310,6 +1354,7 @@ Architecture: {}",
                             self.is_ai_thinking = false;
                             self.ai_response_rx = None;
                             self.add_message(MessageType::Error, &format!("❌ {}", error_msg));
+                            self.should_scroll_to_bottom = true;
                         }
                     }
                 }
@@ -1676,6 +1721,7 @@ Type 'help' to see available commands, or try:
             timestamp: Local::now(),
             message_type: message_type.clone(),
             content: content.to_string(),
+            tool_call_json: None,
         };
 
         self.messages.push(message.clone());
@@ -1686,7 +1732,9 @@ Type 'help' to see available commands, or try:
         // Auto-save conversation periodically
         let _ = self.conversation_manager.save_current_conversation();
 
-        
+        // Trigger auto-scroll when new message is added
+        self.should_scroll_to_bottom = true;
+
         // Keep only last 50 messages in UI
         if self.messages.len() > 50 {
             self.messages.remove(0);
@@ -2034,6 +2082,194 @@ Type 'help' to see available commands, or try:
                     &format!("❌ Command failed: {}", e)
                 );
             }
+        }
+    }
+
+    /// Remove code blocks from text (they'll be shown in tool execution box)
+    fn remove_code_blocks(text: &str) -> String {
+        let mut result = String::new();
+        let mut in_code_block = false;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+
+            // Detect start of code block
+            if trimmed.starts_with("```") && !in_code_block {
+                in_code_block = true;
+                continue;
+            }
+
+            // Detect end of code block
+            if trimmed.starts_with("```") && in_code_block {
+                in_code_block = false;
+                continue;
+            }
+
+            // Only add lines that are NOT in code blocks
+            if !in_code_block {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(line);
+            }
+        }
+
+        result.trim().to_string()
+    }
+
+    /// Execute tool calls found in the last AI message
+    pub async fn execute_ai_bash_commands(&mut self) {
+        use crate::tool_call::extract_tool_calls;
+
+        // Get the last AI message
+        if let Some(last_msg) = self.messages.iter().rev().find(|m| m.message_type == MessageType::Arula) {
+            let tool_calls = extract_tool_calls(&last_msg.content);
+
+            for tool_call in tool_calls {
+                // Serialize the tool call to JSON for display
+                let tool_call_json = serde_json::to_string_pretty(&tool_call).unwrap_or_default();
+
+                // Execute the tool call based on tool type
+                let result = self.execute_tool_call(&tool_call).await;
+
+                // Create a tool call message with the result
+                let content = if result.success {
+                    format!("Tool: {} ✓\n\n{}", result.tool, result.output)
+                } else {
+                    format!("Tool: {} ✗\n\n{}", result.tool, result.output)
+                };
+
+                let tool_call_message = ChatMessage {
+                    timestamp: Local::now(),
+                    message_type: MessageType::ToolCall,
+                    content,
+                    tool_call_json: Some(tool_call_json),
+                };
+
+                self.messages.push(tool_call_message.clone());
+
+                // Save to conversation history
+                let _ = self.conversation_manager.add_message_to_current(tool_call_message);
+
+                // Auto-save conversation
+                let _ = self.conversation_manager.save_current_conversation();
+
+                // Trigger auto-scroll
+                self.should_scroll_to_bottom = true;
+            }
+        }
+    }
+
+    /// Execute a single tool call
+    async fn execute_tool_call(&self, tool_call: &crate::tool_call::ToolCall) -> crate::tool_call::ToolCallResult {
+        use crate::tool_call::ToolCallResult;
+
+        match tool_call.tool.as_str() {
+            "bash" => {
+                // Extract command from arguments
+                if let Some(command) = tool_call.arguments.get("command").and_then(|v| v.as_str()) {
+                    let result = if cfg!(target_os = "windows") {
+                        duct::cmd!("cmd", "/C", command).read()
+                    } else {
+                        duct::cmd!("sh", "-c", command).read()
+                    };
+
+                    match result {
+                        Ok(output) => ToolCallResult {
+                            tool: "bash".to_string(),
+                            success: true,
+                            output,
+                        },
+                        Err(e) => ToolCallResult {
+                            tool: "bash".to_string(),
+                            success: false,
+                            output: format!("Command failed: {}", e),
+                        },
+                    }
+                } else {
+                    ToolCallResult {
+                        tool: "bash".to_string(),
+                        success: false,
+                        output: "Missing 'command' argument".to_string(),
+                    }
+                }
+            }
+            "read_file" => {
+                if let Some(path) = tool_call.arguments.get("path").and_then(|v| v.as_str()) {
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => ToolCallResult {
+                            tool: "read_file".to_string(),
+                            success: true,
+                            output: content,
+                        },
+                        Err(e) => ToolCallResult {
+                            tool: "read_file".to_string(),
+                            success: false,
+                            output: format!("Failed to read file: {}", e),
+                        },
+                    }
+                } else {
+                    ToolCallResult {
+                        tool: "read_file".to_string(),
+                        success: false,
+                        output: "Missing 'path' argument".to_string(),
+                    }
+                }
+            }
+            "write_file" => {
+                let path = tool_call.arguments.get("path").and_then(|v| v.as_str());
+                let content = tool_call.arguments.get("content").and_then(|v| v.as_str());
+
+                if let (Some(path), Some(content)) = (path, content) {
+                    match std::fs::write(path, content) {
+                        Ok(_) => ToolCallResult {
+                            tool: "write_file".to_string(),
+                            success: true,
+                            output: format!("Successfully wrote to {}", path),
+                        },
+                        Err(e) => ToolCallResult {
+                            tool: "write_file".to_string(),
+                            success: false,
+                            output: format!("Failed to write file: {}", e),
+                        },
+                    }
+                } else {
+                    ToolCallResult {
+                        tool: "write_file".to_string(),
+                        success: false,
+                        output: "Missing 'path' or 'content' argument".to_string(),
+                    }
+                }
+            }
+            "list_dir" => {
+                let path = tool_call.arguments.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+
+                match std::fs::read_dir(path) {
+                    Ok(entries) => {
+                        let mut output = String::new();
+                        for entry in entries {
+                            if let Ok(entry) = entry {
+                                output.push_str(&format!("{}\n", entry.path().display()));
+                            }
+                        }
+                        ToolCallResult {
+                            tool: "list_dir".to_string(),
+                            success: true,
+                            output,
+                        }
+                    }
+                    Err(e) => ToolCallResult {
+                        tool: "list_dir".to_string(),
+                        success: false,
+                        output: format!("Failed to list directory: {}", e),
+                    },
+                }
+            }
+            _ => ToolCallResult {
+                tool: tool_call.tool.clone(),
+                success: false,
+                output: format!("Unknown tool: {}", tool_call.tool),
+            },
         }
     }
 

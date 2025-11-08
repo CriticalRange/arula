@@ -9,6 +9,7 @@ pub enum MessageType {
     Success,
     Error,
     Info,
+    ToolCall,  // For displaying tool call boxes
 }
 
 impl std::fmt::Display for MessageType {
@@ -20,6 +21,7 @@ impl std::fmt::Display for MessageType {
             MessageType::Success => write!(f, "success"),
             MessageType::Error => write!(f, "error"),
             MessageType::Info => write!(f, "info"),
+            MessageType::ToolCall => write!(f, "tool_call"),
         }
     }
 }
@@ -29,6 +31,8 @@ pub struct ChatMessage {
     pub timestamp: DateTime<Local>,
     pub message_type: MessageType,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_json: Option<String>,  // Store the raw JSON for tool calls
 }
 
 impl ChatMessage {
@@ -38,6 +42,16 @@ impl ChatMessage {
             timestamp: Local::now(),
             message_type,
             content,
+            tool_call_json: None,
+        }
+    }
+
+    pub fn new_tool_call(content: String, tool_call_json: String) -> Self {
+        Self {
+            timestamp: Local::now(),
+            message_type: MessageType::ToolCall,
+            content,
+            tool_call_json: Some(tool_call_json),
         }
     }
 }

@@ -38,6 +38,8 @@ mod git_ops;
 mod cli_commands;
 mod progress;
 mod conversation;
+mod tool_call;
+mod widgets;
 
 use app::App;
 use layout::Layout;
@@ -131,6 +133,18 @@ async fn run_app(
     loop {
         // Check for AI responses (non-blocking)
         app.check_ai_response();
+
+        // Auto-scroll to bottom when flag is set (new messages or streaming updates)
+        if app.should_scroll_to_bottom {
+            layout.scroll_to_bottom();
+            app.should_scroll_to_bottom = false;  // Reset flag after scrolling
+        }
+
+        // Execute bash commands from AI response when flag is set
+        if app.should_execute_bash {
+            app.should_execute_bash = false;  // Reset flag first
+            app.execute_ai_bash_commands().await;
+        }
 
         // Draw UI
         let messages = app.messages.clone();
