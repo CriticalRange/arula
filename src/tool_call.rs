@@ -107,6 +107,49 @@ pub fn is_json(text: &str) -> bool {
     text.trim_start().starts_with('{') || text.trim_start().starts_with('[')
 }
 
+/// Extract bash commands from code blocks
+pub fn extract_bash_commands(content: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut in_code_block = false;
+    let mut current_code = String::new();
+    let mut is_bash_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect start of code block
+        if trimmed.starts_with("```") && !in_code_block {
+            in_code_block = true;
+            is_bash_block = trimmed.contains("bash") || trimmed.contains("sh") || trimmed.contains("shell");
+            current_code.clear();
+            continue;
+        }
+
+        // Detect end of code block
+        if trimmed.starts_with("```") && in_code_block {
+            in_code_block = false;
+
+            if is_bash_block && !current_code.trim().is_empty() {
+                commands.push(current_code.trim().to_string());
+            }
+
+            current_code.clear();
+            is_bash_block = false;
+            continue;
+        }
+
+        // Collect code block content
+        if in_code_block && is_bash_block {
+            if !current_code.is_empty() {
+                current_code.push('\n');
+            }
+            current_code.push_str(line);
+        }
+    }
+
+    commands
+}
+
 /// Pretty format JSON for display
 pub fn format_json(json_str: &str) -> Result<String, serde_json::Error> {
     let value: serde_json::Value = serde_json::from_str(json_str)?;

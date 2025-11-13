@@ -1,14 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::{
-    event::{self, EnableMouseCapture, DisableMouseCapture, Event, KeyCode, KeyModifiers, KeyEventKind, MouseEventKind},
-};
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
-use std::io::{self, stdout, IsTerminal};
-use std::time::{Duration, Instant};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 #[derive(Parser)]
 #[command(name = "arula")]
@@ -29,25 +22,19 @@ struct Cli {
 
 mod app;
 mod chat;
-mod art;
 mod config;
-mod ui_components;
-mod layout;
+mod output;
 mod api;
-mod cli_commands;
-mod progress;
-mod conversation;
 mod tool_call;
-mod widgets;
+mod overlay_menu;
 
 use app::App;
-use layout::Layout;
-use ui_components::Theme;
-
+use output::OutputHandler;
+use overlay_menu::OverlayMenu;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Install color-eyre for better error reporting (optional)
+    // Install color-eyre for better error reporting
     let _ = color_eyre::install();
 
     let cli = Cli::parse();
@@ -56,35 +43,8 @@ async fn main() -> Result<()> {
         println!("🚀 Starting ARULA CLI with endpoint: {}", cli.endpoint);
     }
 
-    // Check if we're in a proper terminal
-    if !stdout().is_terminal() {
-        eprintln!("⚠️  Terminal Error: ARULA CLI requires a proper terminal environment to run.");
-        eprintln!();
-        eprintln!("This application needs:");
-        eprintln!("• A real terminal (not a pipe or redirected output)");
-        eprintln!("• Interactive terminal support");
-        eprintln!("• Proper TTY capabilities");
-        eprintln!();
-        eprintln!("For Termux users:");
-        eprintln!("  export TERM=xterm-256color");
-        eprintln!("  pkg install xterm-repo && pkg install xterm");
-        eprintln!();
-        eprintln!("To run ARULA CLI:");
-        eprintln!("  cargo run                    # In a real terminal");
-        eprintln!("  ./target/release/arula-cli   # After building release");
-        eprintln!();
-        eprintln!("❌ Cannot continue without proper terminal support.");
-        std::process::exit(1);
-    }
-
-    // Initialize terminal with modern ratatui approach
-    let mut terminal = ratatui::init();
-    terminal.clear()?;
-
-    // Enable mouse capture for scroll wheel support
-    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-
-    // Create app and layout
+    // Create output handler and app
+    let mut output = OutputHandler::new();
     let mut app = App::new()?;
 
     // Initialize AI client if configuration is valid
@@ -102,196 +62,202 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut layout = Layout::default();
-layout.set_theme(Theme::Cyberpunk);
+    // Print banner
+    output.print_banner()?;
+    println!();
 
-    // Run app with proper cleanup
-    let res = run_app(&mut terminal, &mut app, &mut layout).await;
+    // Create rustyline editor
+    let mut rl = DefaultEditor::new()?;
 
-    // Always cleanup using modern ratatui approach, even if an error occurred
-    let _ = ratatui::restore();
+    // Create overlay menu
+    let mut menu = OverlayMenu::new();
 
-    // Disable mouse capture
-    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    // Load history if exists
+    let history_path = dirs::home_dir()
+        .map(|p| p.join(".arula_history"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".arula_history"));
 
-    if let Err(err) = res {
-        println!("{err:?}");
+    let _ = rl.load_history(&history_path);
+
+    // Main input loop
+    loop {
+        // Check for AI responses (non-blocking)
+        if let Some(response) = app.check_ai_response_nonblocking() {
+            match response {
+                app::AiResponse::StreamStart => {
+                    output.start_ai_message()?;
+                }
+                app::AiResponse::StreamChunk(chunk) => {
+                    output.print_streaming_chunk(&chunk)?;
+                }
+                app::AiResponse::StreamEnd => {
+                    output.end_line()?;
+                    // Execute bash commands if any
+                    if let Some(commands) = app.get_pending_bash_commands() {
+                        for cmd in commands {
+                            output.print_system(&format!("Executing: {}", cmd))?;
+                            match app.execute_bash_command(&cmd).await {
+                                Ok(result) => {
+                                    output.print_tool_result(&result)?;
+                                }
+                                Err(e) => {
+                                    output.print_error(&format!("Command failed: {}", e))?;
+                                }
+                            }
+                        }
+                    }
+                }
+                app::AiResponse::Success { response, usage: _ } => {
+                    output.print_ai_message(&response)?;
+                    // Execute bash commands if any
+                    if let Some(commands) = app.get_pending_bash_commands() {
+                        for cmd in commands {
+                            output.print_system(&format!("Executing: {}", cmd))?;
+                            match app.execute_bash_command(&cmd).await {
+                                Ok(result) => {
+                                    output.print_tool_result(&result)?;
+                                }
+                                Err(e) => {
+                                    output.print_error(&format!("Command failed: {}", e))?;
+                                }
+                            }
+                        }
+                    }
+                }
+                app::AiResponse::Error(error_msg) => {
+                    output.print_error(&error_msg)?;
+                }
+            }
+        }
+
+        // Read user input with rustyline
+        let readline = rl.readline(">> ");
+        match readline {
+            Ok(line) => {
+                let input = line.trim();
+
+                // Check for empty input
+                if input.is_empty() {
+                    continue;
+                }
+
+                // Add to history
+                let _ = rl.add_history_entry(input);
+
+                // Check for special shortcuts
+                if input == "m" || input == "menu" {
+                    // Quick menu shortcut
+                    if menu.show_main_menu(&mut app, &mut output)? {
+                        break;
+                    }
+                    continue;
+                }
+
+                // Check for exit commands
+                if input == "exit" || input == "quit" {
+                    output.print_system("Goodbye! 👋")?;
+                    break;
+                }
+
+                // Print user message
+                output.print_user_message(input)?;
+
+                // Handle command
+                if input.starts_with('/') {
+                    // Handle CLI commands
+                    handle_cli_command(input, &mut app, &mut output, &mut menu).await?;
+                } else {
+                    // Send to AI
+                    app.send_to_ai(input).await?;
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C - Show exit confirmation
+                if menu.show_exit_confirmation(&mut output)? {
+                    // Exit confirmed
+                    break;
+                }
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl-D
+                output.print_system("Goodbye! 👋")?;
+                break;
+            }
+            Err(err) => {
+                output.print_error(&format!("Error: {:?}", err))?;
+                break;
+            }
+        }
     }
+
+    // Save history
+    let _ = rl.save_history(&history_path);
 
     Ok(())
 }
 
-async fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+async fn handle_cli_command(
+    input: &str,
     app: &mut App,
-    layout: &mut Layout,
+    output: &mut OutputHandler,
+    menu: &mut OverlayMenu,
 ) -> Result<()> {
-    let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(100); // Faster updates for smoother animation
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    let command = parts[0];
 
-    loop {
-        // Check for AI responses (non-blocking)
-        app.check_ai_response();
-
-        // Auto-scroll to bottom when flag is set (new messages or streaming updates)
-        if app.should_scroll_to_bottom {
-            layout.scroll_to_bottom();
-            app.should_scroll_to_bottom = false;  // Reset flag after scrolling
+    match command {
+        "/help" => {
+            output.print_system("╔══════════════════════════════════════╗")?;
+            output.print_system("║          ARULA HELP MENU             ║")?;
+            output.print_system("╚══════════════════════════════════════╝")?;
+            output.print_system("")?;
+            output.print_system("📋 Commands:")?;
+            output.print_system("  /help              - Show this help")?;
+            output.print_system("  /menu              - Open interactive menu")?;
+            output.print_system("  /clear             - Clear conversation history")?;
+            output.print_system("  /config            - Show current configuration")?;
+            output.print_system("  /model <name>      - Change AI model")?;
+            output.print_system("  exit or quit       - Exit ARULA")?;
+            output.print_system("")?;
+            output.print_system("⌨️  Quick Shortcuts:")?;
+            output.print_system("  m         - Open menu (type 'm' and press Enter)")?;
+            output.print_system("  menu      - Open menu")?;
+            output.print_system("  Ctrl+C    - Exit confirmation")?;
+            output.print_system("  Ctrl+D    - Exit immediately")?;
+            output.print_system("")?;
+            output.print_system("💡 TIP: Just type 'm' to open the menu anytime!")?;
         }
-
-        // Execute bash commands from AI response when flag is set
-        if app.should_execute_bash {
-            app.should_execute_bash = false;  // Reset flag first
-            app.execute_ai_bash_commands().await;
-        }
-
-        // Draw UI
-        let messages = app.messages.clone();
-        terminal.draw(|f| layout.render(f, app, &messages))?;
-
-        
-        // Handle events with shorter timeout for better responsiveness
-        let timeout = Duration::from_millis(50); // Very responsive to input
-
-        if crossterm::event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    // Only handle key press events, ignore key release
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
-
-                    // Handle Ctrl+C for exit
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                        // Check if already in exit confirmation
-                        if matches!(app.state, crate::app::AppState::Menu(crate::app::MenuType::ExitConfirmation)) {
-                            // Graceful exit: first clear popup and textarea, then exit
-                            app.state = crate::app::AppState::Chat; // Clear menu popup
-                            app.show_input = false; // Hide input textarea
-                            let messages = app.messages.clone();
-                            terminal.draw(|f| layout.render(f, app, &messages))?; // Render chat without popup/textarea
-                            std::thread::sleep(Duration::from_millis(100)); // Brief pause for visual feedback
-                            app.state = crate::app::AppState::Exiting;
-                            return Ok(());
-                        } else {
-                            // Show exit confirmation
-                            app.state = crate::app::AppState::Menu(crate::app::MenuType::ExitConfirmation);
-                            app.menu_selected = 0;
-                        }
-                        continue;
-                    }
-
-                    // Check if we're in menu mode
-                    if matches!(app.state, crate::app::AppState::Menu(_)) {
-                        app.handle_menu_navigation(key);
-                    } else {
-                        match key.code {
-                            KeyCode::Esc => {
-                                // Open main menu
-                                app.state = crate::app::AppState::Menu(crate::app::MenuType::Main);
-                            }
-                            KeyCode::PageUp => {
-                                // Scroll chat up
-                                for _ in 0..5 {
-                                    layout.scroll_state.scroll_up();
-                                }
-                            }
-                            KeyCode::PageDown => {
-                                // Scroll chat down
-                                for _ in 0..5 {
-                                    layout.scroll_state.scroll_down();
-                                }
-                            }
-                            KeyCode::Up => {
-                                // If Ctrl is held, scroll chat up
-                                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                    layout.scroll_state.scroll_up();
-                                } else {
-                                    app.handle_key_event(key);
-                                }
-                            }
-                            KeyCode::Down => {
-                                // If Ctrl is held, scroll chat down
-                                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                    layout.scroll_state.scroll_down();
-                                } else {
-                                    app.handle_key_event(key);
-                                }
-                            }
-                            KeyCode::Home => {
-                                // Scroll to top
-                                layout.scroll_state.scroll_to_top();
-                            }
-                            KeyCode::End => {
-                                // Scroll to bottom
-                                layout.scroll_state.scroll_to_bottom();
-                            }
-                            _ => {
-                                app.handle_key_event(key);
-                            }
-                        }
-                    }
-                }
-                Event::FocusGained => {
-                    // Terminal gained focus - enable input mode
-                    if app.state == crate::app::AppState::Chat {
-                        app.input_mode = true;
-                    }
-                }
-                Event::FocusLost => {
-                    // Terminal lost focus - you might want to disable input mode here
-                    // For now, keep it enabled for better UX
-                }
-                Event::Resize(width, height) => {
-                    // Handle terminal resize
-                    app.handle_terminal_resize(width, height);
-                }
-                Event::Mouse(mouse_event) => {
-                    // Handle mouse events for scrolling
-                    if matches!(app.state, crate::app::AppState::Chat) {
-                        match mouse_event.kind {
-                            MouseEventKind::ScrollDown => {
-                                // Scroll down - scroll multiple lines for better UX
-                                for _ in 0..3 {
-                                    layout.scroll_state.scroll_down();
-                                }
-                            }
-                            MouseEventKind::ScrollUp => {
-                                // Scroll up - scroll multiple lines for better UX
-                                for _ in 0..3 {
-                                    layout.scroll_state.scroll_up();
-                                }
-                            }
-                            _ => {
-                                // Handle other mouse events if needed
-                            }
-                        }
-                    }
-                }
-                _ => {}
+        "/menu" => {
+            // Show menu
+            if menu.show_main_menu(app, output)? {
+                // Exit requested
+                std::process::exit(0);
             }
         }
-
-        // Handle pending async commands
-        if let Some(command) = app.pending_command.take() {
-            app.handle_command(command).await;
+        "/clear" => {
+            app.clear_conversation();
+            output.print_system("Conversation cleared")?;
         }
-
-        if last_tick.elapsed() >= tick_rate {
-            app.update();
-            last_tick = Instant::now();
+        "/config" => {
+            let config = app.get_config();
+            output.print_system(&format!("Provider: {}", config.ai.provider))?;
+            output.print_system(&format!("Model: {}", config.ai.model))?;
+            output.print_system(&format!("API Key: {}", if config.ai.api_key.is_empty() { "Not set" } else { "Set" }))?;
         }
-
-        // Check if app should exit
-        if app.state == crate::app::AppState::Exiting {
-            // Graceful exit: first clear popup and textarea, then exit
-            app.state = crate::app::AppState::Chat; // Clear menu state
-            app.show_input = false; // Hide input textarea
-            let messages = app.messages.clone();
-            terminal.draw(|f| layout.render(f, app, &messages))?; // Render chat without popup/textarea
-            std::thread::sleep(Duration::from_millis(100)); // Brief pause for visual feedback
-            return Ok(());
+        "/model" => {
+            if parts.len() < 2 {
+                output.print_error("Usage: /model <name>")?;
+            } else {
+                let model = parts[1];
+                app.set_model(model);
+                output.print_system(&format!("Model changed to: {}", model))?;
+            }
+        }
+        _ => {
+            output.print_error(&format!("Unknown command: {}", command))?;
+            output.print_system("Type /help for available commands")?;
         }
     }
-}
 
+    Ok(())
+}
