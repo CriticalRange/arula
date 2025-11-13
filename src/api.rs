@@ -4,8 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use futures::StreamExt;
 use async_openai::{
     config::OpenAIConfig,
+    types::{
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestUserMessageArgs, ChatCompletionRequestAssistantMessageArgs,
+        CreateChatCompletionRequestArgs,
+    },
     Client as OpenAIClient,
 };
 
@@ -80,7 +86,7 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(provider: String, endpoint: String, api_key: String, model: String) -> Self {
-        let provider = match provider.to_lowercase().as_str() {
+        let provider_type = match provider.to_lowercase().as_str() {
             "openai" => AIProvider::OpenAI,
             "claude" | "anthropic" => AIProvider::Claude,
             "ollama" => AIProvider::Ollama,
@@ -95,13 +101,17 @@ impl ApiClient {
             .expect("Failed to create HTTP client");
 
         // Initialize OpenAI client for streaming support
-        let openai_client = if matches!(provider, AIProvider::OpenAI) {
-            Some(OpenAIClient::new())
+        let openai_client = if matches!(provider_type, AIProvider::OpenAI) && !api_key.is_empty() {
+            let mut config = OpenAIConfig::new().with_api_key(&api_key);
+            if !endpoint.is_empty() && endpoint != "https://api.openai.com/v1" {
+                config = config.with_api_base(&endpoint);
+            }
+            Some(OpenAIClient::with_config(config))
         } else {
             None
         };
 
-        Self { client, openai_client, provider, endpoint, api_key, model }
+        Self { client, openai_client, provider: provider_type, endpoint, api_key, model }
     }
 
     pub async fn send_message(&self, message: &str, conversation_history: Option<Vec<ChatMessage>>) -> Result<ApiResponse> {
@@ -165,50 +175,33 @@ impl ApiClient {
 
         match self.provider {
             AIProvider::OpenAI => {
-                // For now, use the same fallback approach for all providers
-                // In a full implementation, you would use actual OpenAI streaming here
-                tokio::spawn(async move {
-                    // Simulate streaming for better UX
-                    let _ = tx.send(StreamingResponse::Start);
-
-                    // Get user message for simulation
-                    let user_message = messages.iter()
-                        .find(|m| m.role == "user")
-                        .map(|m| m.content.clone())
-                        .unwrap_or_else(|| "Hello".to_string());
-
-                    // Simulate streaming response with better UX
-                    let response = format!("🤖 **ARULA Streaming Response**\n\nI received your message: \"{}\"\n\nThis is a demonstration of real-time streaming functionality. Each word appears as it's being processed, just like with real AI responses.\n\nThe streaming implementation allows you to see responses being generated character by character, providing immediate feedback and a more natural conversational flow.\n\n✨ Streaming complete!", user_message);
-                    let words: Vec<&str> = response.split_whitespace().collect();
-
-                    // Stream word by word for better visibility
-                    for (i, word) in words.iter().enumerate() {
-                        let chunk = if i == 0 {
-                            format!("{} ", word)
-                        } else {
-                            format!(" {}", word)
-                        };
-                        let _ = tx.send(StreamingResponse::Chunk(chunk));
-                        tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
-                    }
-
-                    // Send final response
-                    let final_response = ApiResponse {
-                        response,
-                        success: true,
-                        error: None,
-                        usage: None,
-                    };
-                    let _ = tx.send(StreamingResponse::End(final_response));
-                });
+                if let Some(openai_client) = self.openai_client.clone() {
+                    let model = self.model.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = Self::handle_openai_stream(&openai_client, messages, &model, tx.clone()).await {
+                            let _ = tx.send(StreamingResponse::Error(format!("OpenAI streaming error: {}", e)));
+                        }
+                    });
+                } else {
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamingResponse::Error("OpenAI client not initialized. Please configure your API key.".to_string()));
+                    });
+                }
             }
             _ => {
                 // Fallback to non-streaming for other providers
+                let client = self.clone();
+                let last_message = messages.last().map(|m| m.content.clone()).unwrap_or_default();
                 tokio::spawn(async move {
-                    if let Ok(response) = Self::fallback_non_streaming(messages).await {
-                        let _ = tx.send(StreamingResponse::End(response));
-                    } else {
-                        let _ = tx.send(StreamingResponse::Error("Non-streaming request failed".to_string()));
+                    match client.send_message(&last_message, Some(messages)).await {
+                        Ok(response) => {
+                            let _ = tx.send(StreamingResponse::Start);
+                            let _ = tx.send(StreamingResponse::Chunk(response.response.clone()));
+                            let _ = tx.send(StreamingResponse::End(response));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(StreamingResponse::Error(format!("Request failed: {}", e)));
+                        }
                     }
                 });
             }
@@ -439,38 +432,71 @@ impl ApiClient {
         }
     }
 
-    
-    // Handle OpenAI streaming (simplified approach)
+
+    // Handle OpenAI streaming with real API
     async fn handle_openai_stream(
-        _openai_client: &OpenAIClient<OpenAIConfig>,
+        openai_client: &OpenAIClient<OpenAIConfig>,
         messages: Vec<ChatMessage>,
-        _model: &str,
+        model: &str,
         tx: mpsc::UnboundedSender<StreamingResponse>,
     ) -> Result<()> {
         // Send start signal
         let _ = tx.send(StreamingResponse::Start);
 
-        // For now, implement a simple fallback that simulates streaming
-        // In a full implementation, you'd use the actual streaming API
-        let user_message = messages.iter()
-            .find(|m| m.role == "user")
-            .map(|m| m.content.clone())
-            .unwrap_or_else(|| "Hello".to_string());
+        // Convert our ChatMessage format to OpenAI format
+        let mut openai_messages = Vec::new();
+        for msg in messages {
+            let message: ChatCompletionRequestMessage = match msg.role.as_str() {
+                "system" => ChatCompletionRequestSystemMessageArgs::default()
+                    .content(msg.content)
+                    .build()?
+                    .into(),
+                "assistant" => ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(msg.content)
+                    .build()?
+                    .into(),
+                _ => ChatCompletionRequestUserMessageArgs::default()
+                    .content(msg.content)
+                    .build()?
+                    .into(),
+            };
+            openai_messages.push(message);
+        }
 
-        // Simulate streaming by sending chunks
-        let response = format!("This is a simulated streaming response to: {}", user_message);
-        let chars: Vec<char> = response.chars().collect();
-        let chunk_size = 5;
+        // Create streaming request
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(model)
+            .messages(openai_messages)
+            .temperature(0.7)
+            .max_tokens(2048_u16)
+            .build()?;
 
-        for chunk in chars.chunks(chunk_size) {
-            let chunk_str: String = chunk.iter().collect();
-            let _ = tx.send(StreamingResponse::Chunk(chunk_str));
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Get the stream
+        let mut stream = openai_client.chat().create_stream(request).await?;
+
+        let mut full_response = String::new();
+
+        // Process stream chunks
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response) => {
+                    for choice in response.choices {
+                        if let Some(content) = choice.delta.content {
+                            full_response.push_str(&content);
+                            let _ = tx.send(StreamingResponse::Chunk(content));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(StreamingResponse::Error(format!("Stream error: {}", e)));
+                    return Err(anyhow::anyhow!("Stream error: {}", e));
+                }
+            }
         }
 
         // Send final response
         let final_response = ApiResponse {
-            response,
+            response: full_response,
             success: true,
             error: None,
             usage: None,

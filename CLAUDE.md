@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-ARULA CLI - Autonomous AI command-line interface with TUI.
+ARULA CLI - Autonomous AI command-line interface with native terminal scrollback.
 
 ## Development Commands
 
@@ -12,49 +12,46 @@ cargo test                       # Run tests
 
 ## Architecture
 
-**Core Flow**: `main()` → event loop → `app.handle_key_event()` / `app.check_ai_response()`
+**Core Flow**: `main()` → rustyline readline loop → `app.send_to_ai()` / `app.check_ai_response_nonblocking()`
 
 **Key Modules**:
-- `app.rs`: Application state (too large, needs refactoring)
-- `main.rs`: Event loop, terminal handling
-- `api.rs`: AI client with streaming
-- `layout.rs`: TUI rendering
+- `app.rs`: Application state and AI message handling (~260 lines)
+- `main.rs`: Rustyline input loop, command handling, AI response processing
+- `api.rs`: AI client with streaming support
+- `output.rs`: Colored terminal output to stdout
+- `overlay_menu.rs`: Crossterm-based overlay menu system
+- `tool_call.rs`: Bash command extraction from AI responses
 
 **AI Streaming**: Uses `tokio::sync::mpsc::unbounded_channel()` for non-blocking responses.
 
+**Terminal Design**: No alternate screen - all output flows to native scrollback buffer.
+
 ## Design Principles
 
-**Core Principles to Follow:**
+**Core Principles Followed:**
 
 1. **Single Responsibility Principle (SRP)**
    - Each module has one clear purpose
-   - Break down large files (app.rs is 2058 lines)
-   - One reason to change per module
+   - `output.rs` handles display, `app.rs` handles logic, `overlay_menu.rs` handles menus
+   - Successfully reduced `app.rs` from 2058 lines to ~260 lines
 
 2. **Don't Repeat Yourself (DRY)**
    - Extract common patterns into reusable functions
-   - Avoid duplicated code across modules
+   - `OutputHandler` centralizes all terminal output formatting
 
 3. **KISS Principle**
    - Keep code simple and straightforward
-   - Async event loop is a good example
+   - Replaced complex ratatui TUI with simple rustyline readline loop
+   - Direct stdout printing instead of render buffers
 
 4. **Command-Query-Separation (CQS)**
-   - Commands perform actions, queries return data
-   - `handle_ai_command()` is command, state checks are queries
+   - Commands perform actions: `send_to_ai()`, `execute_bash_command()`
+   - Queries return data: `get_config()`, `check_ai_response_nonblocking()`
 
 5. **Encapsulation**
-   - Bundle data with methods that operate on it
-   - `ConversationManager` encapsulates chat persistence
-   - `GitOperations` encapsulates repository state
-
-6. **Open/Closed Principle (OCP)**
-   - Open for extension, closed for modification
-   - Use traits for AI providers to extend easily
-
-7. **Dependency Inversion Principle (DIP)**
-   - Depend on abstractions, not concretions
-   - Abstract `ApiClient` behind trait for testing
+   - `OutputHandler` encapsulates colored output
+   - `OverlayMenu` encapsulates menu state and rendering
+   - `ApiClient` encapsulates API communication
 
 ## Implementation Patterns
 
@@ -63,19 +60,66 @@ cargo test                       # Run tests
 let (tx, rx) = mpsc::unbounded_channel();
 self.ai_response_rx = Some(rx);
 tokio::spawn(async move {
-    api_client.send_message_streaming(prompt, message_history, tx).await;
+    match api_client.send_message_stream(&msg, Some(message_history)).await {
+        Ok(mut stream_rx) => {
+            let _ = tx.send(AiResponse::StreamStart);
+            while let Some(response) = stream_rx.recv().await {
+                match response {
+                    StreamingResponse::Chunk(chunk) => {
+                        let _ = tx.send(AiResponse::StreamChunk(chunk));
+                    }
+                    StreamingResponse::End(_) => {
+                        let _ = tx.send(AiResponse::StreamEnd);
+                        break;
+                    }
+                }
+            }
+        }
+    }
 });
 ```
 
+**Non-blocking Response Check**:
+```rust
+// In main loop
+if let Some(response) = app.check_ai_response_nonblocking() {
+    match response {
+        AiResponse::StreamStart => output.start_ai_message()?,
+        AiResponse::StreamChunk(chunk) => output.print_streaming_chunk(&chunk)?,
+        AiResponse::StreamEnd => output.end_line()?,
+    }
+}
+```
+
+**Overlay Menu Pattern**:
+```rust
+// Clear screen, enable raw mode, show menu, restore
+execute!(stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
+terminal::enable_raw_mode()?;
+let result = self.run_main_menu(app, output);
+terminal::disable_raw_mode()?;
+execute!(stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
+```
 
 **Adding Menu Options**:
-1. Add variant to `MenuOption` enum
-2. Add to `App::menu_options()`
-3. Add display text in `App::option_display()`
-4. Handle in `App::handle_menu_navigation()`
+1. Add option to `options` vector in `run_main_menu()`
+2. Add match arm in `KeyCode::Enter` handler
+3. Implement the option's logic (may call other methods)
+4. Use `show_confirm_dialog()` for confirmations
 
 ## Terminal Notes
 
 - Termux: `export TERM=xterm-256color`
-- Width < 50: auto vertical layout
-- Mouse support enabled
+- Native scrollback enabled - no alternate screen
+- Menu shortcuts: `m`, `menu`, or `/menu`
+- Ctrl+C shows exit confirmation (double press to exit)
+- All output uses termcolor for consistent styling
+
+## Key Libraries
+
+- **rustyline**: Readline-style input with history
+- **crossterm**: Terminal manipulation (raw mode, cursor, styling)
+- **termcolor**: Colored output
+- **dialoguer**: Interactive prompts (used in configuration menu)
+- **tokio**: Async runtime for AI streaming
+- **async-openai**: OpenAI API client with streaming

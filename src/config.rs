@@ -64,7 +64,7 @@ impl Config {
             ai: AiConfig {
                 provider: "openai".to_string(),
                 model: "gpt-3.5-turbo".to_string(),
-                api_url: "https://api.openai.com".to_string(),
+                api_url: "https://api.openai.com/v1".to_string(),
                 api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             },
         }
