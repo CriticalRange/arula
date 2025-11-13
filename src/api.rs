@@ -191,9 +191,17 @@ impl ApiClient {
             _ => {
                 // Fallback to non-streaming for other providers
                 let client = self.clone();
-                let last_message = messages.last().map(|m| m.content.clone()).unwrap_or_default();
                 tokio::spawn(async move {
-                    match client.send_message(&last_message, Some(messages)).await {
+                    // Use the provider-specific methods directly with the complete message array
+                    let result = match client.provider {
+                        AIProvider::Claude => client.send_claude_request(messages).await,
+                        AIProvider::Ollama => client.send_ollama_request(messages).await,
+                        AIProvider::ZAiCoding => client.send_zai_request(messages).await,
+                        AIProvider::Custom => client.send_custom_request(messages).await,
+                        _ => Err(anyhow::anyhow!("Unsupported provider")),
+                    };
+
+                    match result {
                         Ok(response) => {
                             let _ = tx.send(StreamingResponse::Start);
                             let _ = tx.send(StreamingResponse::Chunk(response.response.clone()));
