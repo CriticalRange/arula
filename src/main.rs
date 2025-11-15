@@ -36,10 +36,23 @@ use app::App;
 use output::OutputHandler;
 use overlay_menu::OverlayMenu;
 
+/// Guard to ensure cursor is shown when the program exits
+struct CursorGuard;
+
+impl Drop for CursorGuard {
+    fn drop(&mut self) {
+        // Always show cursor on drop, regardless of how we exit
+        let _ = console::Term::stdout().show_cursor();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install color-eyre for better error reporting
     let _ = color_eyre::install();
+
+    // Create cursor guard to ensure cursor is restored on exit
+    let _cursor_guard = CursorGuard;
 
     let cli = Cli::parse();
 
@@ -74,14 +87,17 @@ async fn main() -> Result<()> {
     // Print banner
     output.print_banner()?;
     println!();
-    println!("{}", console::style("Tip: End line with \\ to continue on next line. Press Enter alone to send.").dim());
+    println!("{}", console::style("💡 Tips:").cyan().bold());
+    println!("{}", console::style("  • Paste multi-line content, then press Enter on empty line to send").dim());
+    println!("{}", console::style("  • End line with \\ to continue typing on next line").dim());
     println!();
 
-    // Create rustyline editor with multi-line support
+    // Create rustyline editor with multi-line support and bracketed paste
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .edit_mode(EditMode::Emacs)
         .auto_add_history(true)
+        .bracketed_paste(true)  // Enable bracketed paste mode
         .build();
 
     let mut rl: Editor<(), DefaultHistory> = Editor::with_config(config)?;
@@ -249,6 +265,8 @@ async fn main() -> Result<()> {
     // Save history
     let _ = rl.save_history(&history_path);
 
+    // Cursor will be automatically shown by CursorGuard's Drop implementation
+
     Ok(())
 }
 
@@ -262,43 +280,69 @@ fn read_multiline_input(rl: &mut Editor<(), DefaultHistory>) -> Result<String, R
     let mut in_multiline = false;
 
     loop {
-        // Use continuation prompt if we're in multi-line mode
-        let prompt = if in_multiline {
-            format!("{} ", style("│").cyan().dim())
-        } else {
-            format!("{} ", style("│").cyan().bold())
-        };
+        let prompt = "│ ";
 
-        match rl.readline(&prompt) {
+        match rl.readline(prompt) {
             Ok(line) => {
-                // If line ends with backslash, it's a continuation
+                // Check if this is a bracketed paste (contains newlines)
+                if line.contains('\n') {
+                    let pasted_lines: Vec<&str> = line.lines().collect();
+                    let total_lines = pasted_lines.len();
+
+                    // Show preview
+                    if total_lines > 0 {
+                        println!("│ > {} lines pasted", style(total_lines).yellow());
+
+                        // Show first few lines as preview
+                        for preview_line in pasted_lines.iter().take(3) {
+                            let truncated = if preview_line.len() > 60 {
+                                format!("{}...", &preview_line[..60])
+                            } else {
+                                preview_line.to_string()
+                            };
+                            println!("│   {}", style(truncated).dim());
+                        }
+
+                        if total_lines > 3 {
+                            println!("│   {}", style(format!("... and {} more lines", total_lines - 3)).dim());
+                        }
+                    }
+
+                    // Add all pasted lines
+                    lines.extend(pasted_lines.iter().map(|s| s.to_string()));
+                    in_multiline = true;
+                    continue;
+                }
+
+                // Line ends with backslash = manual continuation
                 if line.trim_end().ends_with('\\') {
-                    // Remove backslash and add line
                     let mut content = line.trim_end().to_string();
-                    content.pop(); // Remove the backslash
+                    content.pop(); // Remove backslash
                     lines.push(content);
                     in_multiline = true;
                     continue;
                 }
 
-                // Empty line behavior:
-                // - If we're in multi-line mode (have content), finish
-                // - If first line is empty, cancel
+                // Empty line behavior
                 if line.trim().is_empty() {
-                    if in_multiline {
-                        // Finish multi-line input
+                    if lines.is_empty() {
+                        // Empty first line - cancel
+                        println!("{}", style("└─>").cyan().dim());
+                        return Err(ReadlineError::Interrupted);
+                    } else if in_multiline {
+                        // Empty line after paste/multiline - finish
                         break;
                     } else {
-                        // Empty first line - cancel
+                        // Empty line on single input - cancel
                         println!("{}", style("└─>").cyan().dim());
                         return Err(ReadlineError::Interrupted);
                     }
                 }
 
-                // Add current line and check if we should continue
+                // Add current line
                 lines.push(line);
 
-                // If not in multiline mode, this is a single line - finish
+                // Auto-send if single line and not in multiline mode
                 if !in_multiline {
                     break;
                 }
