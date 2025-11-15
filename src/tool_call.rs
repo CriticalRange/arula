@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use anyhow::Result;
 
 /// Represents a tool call in JSON format from the AI
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,51 @@ pub struct ToolCallResult {
     pub tool: String,
     pub success: bool,
     pub output: String,
+}
+
+/// Bash tool parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashToolParams {
+    pub command: String,
+}
+
+/// Execute bash command using duct
+pub async fn execute_bash_tool(command: &str) -> Result<ToolCallResult> {
+    use duct::cmd;
+
+    match cmd!("bash", "-c", command).read() {
+        Ok(output) => Ok(ToolCallResult {
+            tool: "bash_tool".to_string(),
+            success: true,
+            output,
+        }),
+        Err(e) => Ok(ToolCallResult {
+            tool: "bash_tool".to_string(),
+            success: false,
+            output: format!("Error: {}", e),
+        }),
+    }
+}
+
+/// Get tool schema for bash_tool
+pub fn get_bash_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "bash_tool",
+            "description": "Execute bash shell commands. Use this when you need to run shell commands, check files, navigate directories, install packages, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash command to execute. Make sure the command is safe and appropriate."
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    })
 }
 
 /// Extract tool calls from AI message content

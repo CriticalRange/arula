@@ -9,7 +9,8 @@ pub enum MessageType {
     Success,
     Error,
     Info,
-    ToolCall,  // For displaying tool call boxes
+    ToolCall,      // For displaying tool call boxes
+    ToolResult,    // For displaying tool execution results
 }
 
 impl std::fmt::Display for MessageType {
@@ -22,6 +23,7 @@ impl std::fmt::Display for MessageType {
             MessageType::Error => write!(f, "error"),
             MessageType::Info => write!(f, "info"),
             MessageType::ToolCall => write!(f, "tool_call"),
+            MessageType::ToolResult => write!(f, "tool_result"),
         }
     }
 }
