@@ -110,8 +110,13 @@ async fn main() -> Result<()> {
                         app::AiResponse::StreamChunk(chunk) => {
                             output.print_streaming_chunk(&chunk)?;
                         }
-                        app::AiResponse::StreamEnd(_) => {
+                        app::AiResponse::StreamEnd(api_response_opt) => {
                             output.end_line()?;
+
+                            // Print context usage if available
+                            if let Some(api_response) = &api_response_opt {
+                                output.print_context_usage(api_response.usage.as_ref())?;
+                            }
                             // Execute tool calls if any from API response
                             if let Some(api_response) = app.get_pending_api_response() {
                                 app.execute_tools_and_continue(&api_response).await?;
@@ -147,8 +152,9 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
-                        app::AiResponse::Success { response, usage: _, tool_calls: _ } => {
+                        app::AiResponse::Success { response, usage, tool_calls: _ } => {
                             output.print_ai_message(&response)?;
+                            output.print_context_usage(usage.as_ref())?;
                         }
                         app::AiResponse::Error(error_msg) => {
                             output.print_error(&error_msg)?;
@@ -172,6 +178,8 @@ async fn main() -> Result<()> {
                         }
                         app::AiResponse::AgentStreamEnd => {
                             output.end_line()?;
+                            // Show context usage for agent responses (no usage data available from agent system)
+                            output.print_context_usage(None)?;
                         }
                     }
                 }

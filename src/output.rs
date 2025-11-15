@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use console::style;
+use crate::api::Usage;
 
 pub struct OutputHandler {
     debug: bool,
@@ -97,6 +98,74 @@ impl OutputHandler {
         println!("{}", style("╔═══════════════════════════════════════╗").cyan().bold());
         println!("{}", style("║      ARULA - Autonomous AI CLI        ║").cyan().bold());
         println!("{}", style("╚═══════════════════════════════════════╝").cyan().bold());
+        Ok(())
+    }
+
+    /// Print context usage information at the end of AI responses
+    pub fn print_context_usage(&mut self, usage: Option<&Usage>) -> io::Result<()> {
+        if self.debug {
+            eprintln!("DEBUG: print_context_usage called with usage: {:?}", usage);
+        }
+
+        println!();
+        println!("{}", style("┌─ Context Usage ───────────────────────").dim());
+
+        if let Some(usage_info) = usage {
+            // Standard context limits (adjust based on model)
+            let max_context_tokens: u32 = 128000; // Typical for modern models
+            let remaining_tokens = max_context_tokens.saturating_sub(usage_info.total_tokens);
+            let usage_percentage = (usage_info.total_tokens as f64 / max_context_tokens as f64) * 100.0;
+
+            // Choose color based on usage level for tokens used
+            let used_color = if usage_percentage > 90.0 {
+                style(format!("{}", usage_info.total_tokens)).red().bold()
+            } else if usage_percentage > 75.0 {
+                style(format!("{}", usage_info.total_tokens)).yellow().bold()
+            } else {
+                style(format!("{}", usage_info.total_tokens)).green()
+            };
+
+            // Choose color based on usage level for remaining tokens
+            let remaining_color = if usage_percentage > 90.0 {
+                style(format!("{}", remaining_tokens)).red().bold()
+            } else if usage_percentage > 75.0 {
+                style(format!("{}", remaining_tokens)).yellow().bold()
+            } else {
+                style(format!("{}", remaining_tokens)).green()
+            };
+
+            println!("│ {} tokens used ({:.1}%)", used_color, usage_percentage);
+            println!("│ {} tokens remaining", remaining_color);
+
+            // Add visual indicator
+            let used_bars = (usage_percentage / 100.0 * 20.0) as usize;
+            let remaining_bars = 20 - used_bars;
+            let bar = "█".repeat(used_bars) + &"░".repeat(remaining_bars);
+
+            let bar_color = if usage_percentage > 90.0 {
+                style(&bar).red().bold()
+            } else if usage_percentage > 75.0 {
+                style(&bar).yellow().bold()
+            } else {
+                style(&bar).green()
+            };
+
+            println!("│ [{}]", bar_color);
+
+            if usage_percentage > 90.0 {
+                println!("│ {}", style("⚠️  Warning: Approaching context limit!").red().bold());
+            } else if usage_percentage > 75.0 {
+                println!("│ {}", style("ℹ️  Note: Context usage is getting high").yellow());
+            }
+        } else {
+            // No usage data available from API
+            println!("│ {}", style("Usage data not available from API").dim());
+            println!("│ {} tokens estimated available", style("128,000").dim());
+            println!("│ [{}]", style("░░░░░░░░░░░░░░░░░░░░").dim());
+            println!("│ {}", style("💡 Note: Some providers don't return usage stats").dim());
+        }
+
+        println!("{}", style("└───────────────────────────────────").dim());
         Ok(())
     }
 }
