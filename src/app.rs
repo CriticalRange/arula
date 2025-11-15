@@ -1,6 +1,8 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
 use futures::StreamExt;
+use std::fs;
+use std::path::Path;
 use crate::api::ApiClient;
 use crate::config::Config;
 use crate::chat::{ChatMessage, MessageType};
@@ -67,6 +69,67 @@ impl App {
         self
     }
 
+    /// Build comprehensive system prompt from ARULA.md files
+    fn build_system_prompt() -> String {
+        let mut prompt_parts = Vec::new();
+
+        // Base ARULA personality
+        prompt_parts.push("You are ARULA, an Autonomous AI Interface assistant. You help users with coding, shell commands, and general software development tasks. Be concise, helpful, and provide practical solutions.".to_string());
+
+        // Read global ARULA.md from ~/.arula/
+        if let Some(global_arula) = Self::read_global_arula_md() {
+            prompt_parts.push(format!("\n## Global Project Instructions\n{}", global_arula));
+        }
+
+        // Read local ARULA.md from current directory
+        if let Some(local_arula) = Self::read_local_arula_md() {
+            prompt_parts.push(format!("\n## Current Project Context\n{}", local_arula));
+        }
+
+        prompt_parts.join("\n")
+    }
+
+    /// Read ARULA.md from ~/.arula/ directory
+    fn read_global_arula_md() -> Option<String> {
+        let home_dir = dirs::home_dir()?;
+        let global_arula_path = home_dir.join(".arula").join("ARULA.md");
+
+        if global_arula_path.exists() {
+            match fs::read_to_string(&global_arula_path) {
+                Ok(content) => {
+                    eprintln!("DEBUG: Loaded global ARULA.md from {}", global_arula_path.display());
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("DEBUG: Failed to read global ARULA.md: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Read ARULA.md from current directory
+    fn read_local_arula_md() -> Option<String> {
+        let local_arula_path = Path::new("ARULA.md");
+
+        if local_arula_path.exists() {
+            match fs::read_to_string(local_arula_path) {
+                Ok(content) => {
+                    eprintln!("DEBUG: Loaded local ARULA.md from current directory");
+                    Some(content)
+                }
+                Err(e) => {
+                    eprintln!("DEBUG: Failed to read local ARULA.md: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn initialize_api_client(&mut self) -> Result<()> {
         let api_client = ApiClient::new(
             self.config.ai.provider.clone(),
@@ -77,7 +140,7 @@ impl App {
 
         // Initialize modern agent client with default options
         let agent_options = AgentOptionsBuilder::new()
-            .system_prompt("You are ARULA, an Autonomous AI Interface assistant. You help users with coding, shell commands, and general software development tasks. Be concise, helpful, and provide practical solutions.")
+            .system_prompt(&Self::build_system_prompt())
             .model(&self.config.ai.model)
             .auto_execute_tools(true)
             .max_tool_iterations(1000)
