@@ -13,6 +13,7 @@ pub mod output;
 pub mod overlay_menu;
 pub mod tool_call;
 pub mod tools;
+pub mod visioneer;
 
 // Re-export commonly used types
 pub use app::App;

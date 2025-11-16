@@ -1,0 +1,410 @@
+{
+  "examples": {
+    "basic_automation": {
+      "description": "Basic Notepad automation example",
+      "steps": [
+        {
+          "name": "Open Notepad",
+          "visioneer_params": {
+            "target": "Desktop",
+            "action": {
+              "type": "Click",
+              "target": {
+                "type": "Text",
+                "text": "Notepad"
+              }
+            }
+          }
+        },
+        {
+          "name": "Type Message",
+          "visioneer_params": {
+            "target": "Untitled - Notepad",
+            "action": {
+              "type": "Type",
+              "text": "Hello from Visioneer Automation!",
+              "clear_first": true,
+              "delay_ms": 50
+            }
+          }
+        },
+        {
+          "name": "Save Document",
+          "visioneer_params": {
+            "target": "Untitled - Notepad",
+            "action": {
+              "type": "Hotkey",
+              "keys": ["ctrl", "s"]
+            }
+          }
+        }
+      ]
+    },
+    "ocr_workflow": {
+      "description": "Extract and analyze text from Calculator",
+      "steps": [
+        {
+          "name": "Find Calculator",
+          "visioneer_params": {
+            "target": "Calculator",
+            "action": {
+              "type": "Capture",
+              "region": {
+                "x": 0,
+                "y": 0,
+                "width": 400,
+                "height": 600
+              },
+              "encode_base64": true
+            }
+          }
+        },
+        {
+          "name": "Extract Display Text",
+          "visioneer_params": {
+            "target": "Calculator",
+            "action": {
+              "type": "ExtractText",
+              "region": {
+                "x": 50,
+                "y": 150,
+                "width": 300,
+                "height": 60
+              },
+              "language": "eng"
+            },
+            "ocr_config": {
+              "engine": "tesseract",
+              "language": "eng",
+              "confidence_threshold": 0.8,
+              "preprocessing": {
+                "grayscale": true,
+                "threshold": 128
+              }
+            }
+          }
+        }
+      ]
+    },
+    "smart_ui_interaction": {
+      "description": "Intelligent UI analysis and interaction",
+      "steps": [
+        {
+          "name": "Analyze Login Screen",
+          "visioneer_params": {
+            "target": "Login Application",
+            "action": {
+              "type": "Analyze",
+              "query": "Find the login form elements and describe how to interact with them",
+              "region": null,
+              "context": "User needs to log in with username and password"
+            },
+            "vlm_config": {
+              "model": "gpt-4-vision",
+              "max_tokens": 500,
+              "temperature": 0.1,
+              "detail": "high"
+            }
+          }
+        },
+        {
+          "name": "Click Login Button",
+          "visioneer_params": {
+            "target": "Login Application",
+            "action": {
+              "type": "Click",
+              "target": {
+                "type": "Text",
+                "text": "Login",
+                "region": {
+                  "x": 0,
+                  "y": 0,
+                  "width": 800,
+                  "height": 600
+                }
+              },
+              "button": "Left"
+            }
+          }
+        }
+      ]
+    },
+    "game_automation": {
+      "description": "Simple game automation pattern",
+      "steps": [
+        {
+          "name": "Wait for Game Start",
+          "visioneer_params": {
+            "target": "Game Window",
+            "action": {
+              "type": "WaitFor",
+              "condition": {
+                "type": "Text",
+                "text": "Start",
+                "appears": true
+              },
+              "timeout_ms": 30000,
+              "check_interval_ms": 1000
+            }
+          }
+        },
+        {
+          "name": "Click Start Button",
+          "visioneer_params": {
+            "target": "Game Window",
+            "action": {
+              "type": "Click",
+              "target": {
+                "type": "Text",
+                "text": "Start"
+              }
+            }
+          }
+        },
+        {
+          "name": "Gameplay Loop",
+          "visioneer_params": {
+            "target": "Game Window",
+            "action": {
+              "type": "Analyze",
+              "query": "What is the current game state and what action should I take?",
+              "region": {
+                "x": 0,
+                "y": 0,
+                "width": 1024,
+                "height": 768
+              }
+            }
+          }
+        }
+      ]
+    },
+    "form_automation": {
+      "description": "Automated form filling workflow",
+      "steps": [
+        {
+          "name": "Analyze Form Fields",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Analyze",
+              "query": "Identify all form fields and input elements",
+              "context": "Need to fill out a registration form"
+            }
+          }
+        },
+        {
+          "name": "Fill Username Field",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Click",
+              "target": {
+                "type": "Text",
+                "text": "Username"
+              }
+            }
+          }
+        },
+        {
+          "name": "Enter Username",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Type",
+              "text": "testuser123",
+              "clear_first": true,
+              "delay_ms": 100
+            }
+          }
+        },
+        {
+          "name": "Tab to Password Field",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Hotkey",
+              "keys": ["Tab"]
+            }
+          }
+        },
+        {
+          "name": "Enter Password",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Type",
+              "text": "SecurePassword123!",
+              "delay_ms": 50
+            }
+          }
+        },
+        {
+          "name": "Submit Form",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "Click",
+              "target": {
+                "type": "Text",
+                "text": "Submit"
+              }
+            }
+          }
+        },
+        {
+          "name": "Wait for Confirmation",
+          "visioneer_params": {
+            "target": "Web Browser",
+            "action": {
+              "type": "WaitFor",
+              "condition": {
+                "type": "Text",
+                "text": "Success",
+                "appears": true
+              },
+              "timeout_ms": 15000
+            }
+          }
+        }
+      ]
+    },
+    "monitoring_automation": {
+      "description": "Monitor application status and respond to changes",
+      "steps": [
+        {
+          "name": "Monitor Status",
+          "visioneer_params": {
+            "target": "Monitoring App",
+            "action": {
+              "type": "Capture",
+              "region": {
+                "x": 800,
+                "y": 50,
+                "width": 300,
+                "height": 100
+              },
+              "encode_base64": true
+            }
+          }
+        },
+        {
+          "name": "Check Status Text",
+          "visioneer_params": {
+            "target": "Monitoring App",
+            "action": {
+              "type": "ExtractText",
+              "region": {
+                "x": 800,
+                "y": 50,
+                "width": 300,
+                "height": 100
+              }
+            }
+          }
+        },
+        {
+          "name": "Analyze Status",
+          "visioneer_params": {
+            "target": "Monitoring App",
+            "action": {
+              "type": "Analyze",
+              "query": "What is the current application status and are there any alerts?",
+              "region": {
+                "x": 800,
+                "y": 50,
+                "width": 300,
+                "height": 100
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "templates": {
+    "click_by_text": {
+      "description": "Template for clicking elements by text content",
+      "template": {
+        "target": "{WINDOW_NAME}",
+        "action": {
+          "type": "Click",
+          "target": {
+            "type": "Text",
+            "text": "{BUTTON_TEXT}",
+            "region": {
+              "x": {REGION_X},
+              "y": {REGION_Y},
+              "width": {REGION_WIDTH},
+              "height": {REGION_HEIGHT}
+            }
+          },
+          "button": "{BUTTON_TYPE}"
+        }
+      },
+      "parameters": {
+        "WINDOW_NAME": "Target window title",
+        "BUTTON_TEXT": "Text to search for",
+        "BUTTON_TYPE": "Left|Right|Middle",
+        "REGION_X": "Optional region x coordinate",
+        "REGION_Y": "Optional region y coordinate",
+        "REGION_WIDTH": "Optional region width",
+        "REGION_HEIGHT": "Optional region height"
+      }
+    },
+    "type_with_delay": {
+      "description": "Template for typing text with custom delays",
+      "template": {
+        "target": "{WINDOW_NAME}",
+        "action": {
+          "type": "Type",
+          "text": "{TEXT_TO_TYPE}",
+          "clear_first": {CLEAR_FIRST},
+          "delay_ms": {DELAY_MS}
+        }
+      },
+      "parameters": {
+        "WINDOW_NAME": "Target window title",
+        "TEXT_TO_TYPE": "Text to enter",
+        "CLEAR_FIRST": "true|false",
+        "DELAY_MS": "Delay between characters in milliseconds"
+      }
+    },
+    "ocr_extract": {
+      "description": "Template for extracting text with OCR",
+      "template": {
+        "target": "{WINDOW_NAME}",
+        "action": {
+          "type": "ExtractText",
+          "region": {
+            "x": {REGION_X},
+            "y": {REGION_Y},
+            "width": {REGION_WIDTH},
+            "height": {REGION_HEIGHT}
+          },
+          "language": "{LANGUAGE}"
+        },
+        "ocr_config": {
+          "engine": "tesseract",
+          "language": "{LANGUAGE}",
+          "confidence_threshold": {CONFIDENCE_THRESHOLD},
+          "preprocessing": {
+            "grayscale": {GRAYSCALE},
+            "threshold": {THRESHOLD}
+          }
+        }
+      },
+      "parameters": {
+        "WINDOW_NAME": "Target window title",
+        "REGION_X": "Region x coordinate",
+        "REGION_Y": "Region y coordinate",
+        "REGION_WIDTH": "Region width",
+        "REGION_HEIGHT": "Region height",
+        "LANGUAGE": "OCR language code (e.g., eng, fra)",
+        "CONFIDENCE_THRESHOLD": "Minimum confidence 0.0-1.0",
+        "GRAYSCALE": "true|false",
+        "THRESHOLD": "Binarization threshold 0-255"
+      }
+    }
+  }
+}

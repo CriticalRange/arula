@@ -3,8 +3,8 @@ use crate::output::OutputHandler;
 use anyhow::Result;
 use std::io::{stdout, Write};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    terminal::{self, size, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind},
+    terminal::{self, size, EnterAlternateScreen, LeaveAlternateScreen},
     cursor::{self, MoveTo, Show, Hide, SetCursorStyle},
     style::{Color, Print, SetForegroundColor, SetBackgroundColor, ResetColor},
     ExecutableCommand, QueueableCommand,
@@ -160,35 +160,75 @@ impl OverlayMenu {
     fn run_menu_loop(&mut self, app: &mut App, output: &mut OutputHandler) -> Result<bool> {
         let mut should_exit_app = false;
 
+        // More aggressive event clearing with small delay to ensure all events are processed
+        std::thread::sleep(Duration::from_millis(50));
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+        // Second pass to catch any events that might have arrived during clearing
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         loop {
             self.render_frame(app, output)?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
                     Event::Key(key_event) => {
-                        if key_event.code == KeyCode::Esc || key_event.code == KeyCode::Char('q') {
-                            break; // Exit menu, continue app
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
                         }
 
-                        if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                            break; // Exit menu, continue app
-                        }
-
-                        let result = self.handle_key_event(key_event, app, output)?;
-                        match result {
-                            MenuAction::ExitApp => {
-                                should_exit_app = true;
-                                break;    // Exit menu AND exit app
+                        // Ignore any unexpected key events that might be spurious
+                        match key_event.code {
+                            KeyCode::Esc | KeyCode::Char('q') => {
+                                // If in a submenu, go back to main menu. Otherwise, exit menu.
+                                if self.is_in_config {
+                                    self.is_in_config = false;
+                                    self.selected_index = 0;
+                                    // Clear any pending events when returning to main menu to prevent immediate issues
+                                    while event::poll(Duration::from_millis(0))? {
+                                        let _ = event::read()?;
+                                    }
+                                } else {
+                                    break; // Exit menu, continue app
+                                }
                             }
-                            MenuAction::CloseMenu => break,  // Exit menu, continue app
-                            MenuAction::Continue => {},      // Stay in menu
+                            KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                                break; // Exit menu, continue app
+                            }
+                            // Only process navigation and selection keys
+                            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right |
+                            KeyCode::Enter | KeyCode::Char('j') | KeyCode::Char('k') |
+                            KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Tab |
+                            KeyCode::Backspace | KeyCode::Delete => {
+                                // Valid menu keys - process them
+                                let result = self.handle_key_event(key_event, app, output)?;
+                                match result {
+                                    MenuAction::ExitApp => {
+                                        should_exit_app = true;
+                                        break;    // Exit menu AND exit app
+                                    }
+                                    MenuAction::CloseMenu => break,  // Exit menu, continue app
+                                    MenuAction::Continue => {},      // Stay in menu
+                                }
+                            }
+                            _ => {
+                                // Ignore any other key events that might be spurious
+                                continue;
+                            }
                         }
                     }
                     Event::Resize(_, _) => {
                         // Redraw on resize
                         self.render_frame(app, output)?;
                     }
-                    _ => {}
+                    // Ignore all other event types (mouse, focus, etc.) that might cause issues on Windows
+                    _ => {
+                        continue;
+                    }
                 }
             }
         }
@@ -224,6 +264,10 @@ impl OverlayMenu {
             KeyCode::Left | KeyCode::Char('h') if self.is_in_config => {
                 self.is_in_config = false;
                 self.selected_index = 0;
+                // Clear any pending events when returning to main menu to prevent immediate issues
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(MenuAction::Continue)
             }
             _ => Ok(MenuAction::Continue),
@@ -236,10 +280,18 @@ impl OverlayMenu {
             1 => { // Configuration
                 self.is_in_config = true;
                 self.selected_index = 0;
+                // Clear any pending events when switching to submenu to prevent immediate closure
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             2 => { // Session info
                 self.show_session_info(app)?;
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             3 => { // Clear chat
@@ -247,10 +299,18 @@ impl OverlayMenu {
                     app.clear_conversation();
                     output.print_system("✅ Chat history cleared")?;
                 }
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             4 => { // Help
                 self.show_help()?;
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             5 => { // Exit
@@ -268,12 +328,20 @@ impl OverlayMenu {
         match self.selected_index {
             0 => { // Provider
                 self.show_provider_selector(app, output)?;
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             1 => { // Model
                 if let Some(model) = self.show_text_input("Enter model name", &app.get_config().ai.model)? {
                     app.set_model(&model);
                     output.print_system(&format!("✅ Model set to: {}", model))?;
+                }
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
                 }
                 Ok(false)
             }
@@ -289,6 +357,10 @@ impl OverlayMenu {
                             output.print_system(&format!("✅ API URL set to: {} (AI client will initialize when configuration is complete)", url))?;
                         }
                     }
+                }
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
                 }
                 Ok(false)
             }
@@ -307,11 +379,19 @@ impl OverlayMenu {
                         }
                     }
                 }
+                // Clear any pending events that might have been generated during the dialog
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
             4 | _ => { // Back
                 self.is_in_config = false;
                 self.selected_index = 0;
+                // Clear any pending events when returning to main menu to prevent immediate issues
+                while event::poll(Duration::from_millis(0))? {
+                    let _ = event::read()?;
+                }
                 Ok(false)
             }
         }
@@ -325,6 +405,11 @@ impl OverlayMenu {
             .position(|&p| p == current_config.ai.provider)
             .unwrap_or(0);
 
+        // Clear any pending events in the buffer
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         // Create a temporary selection for provider
         let mut selected_idx = current_idx;
         loop {
@@ -332,41 +417,56 @@ impl OverlayMenu {
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Up, .. }) |
-                    Event::Key(KeyEvent { code: KeyCode::Char('k'), .. }) => {
-                        if selected_idx > 0 {
-                            selected_idx -= 1;
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
                         }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Down, .. }) |
-                    Event::Key(KeyEvent { code: KeyCode::Char('j'), .. }) => {
-                        if selected_idx < providers.len() - 1 {
-                            selected_idx += 1;
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                        app.config.ai.provider = providers[selected_idx].to_string();
-                        let _ = app.config.save();
-                        match app.initialize_agent_client() {
-                            Ok(()) => {
-                                output.print_system(&format!(
-                                    "✅ Provider set to: {} (AI client initialized)",
-                                    providers[selected_idx]
-                                ))?;
+
+                        // Only handle valid navigation keys
+                        match key_event.code {
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if selected_idx > 0 {
+                                    selected_idx -= 1;
+                                }
                             }
-                            Err(_) => {
-                                output.print_system(&format!(
-                                    "✅ Provider set to: {} (AI client will initialize when configuration is complete)",
-                                    providers[selected_idx]
-                                ))?;
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if selected_idx < providers.len() - 1 {
+                                    selected_idx += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                app.config.ai.provider = providers[selected_idx].to_string();
+                                let _ = app.config.save();
+                                match app.initialize_agent_client() {
+                                    Ok(()) => {
+                                        output.print_system(&format!(
+                                            "✅ Provider set to: {} (AI client initialized)",
+                                            providers[selected_idx]
+                                        ))?;
+                                    }
+                                    Err(_) => {
+                                        output.print_system(&format!(
+                                            "✅ Provider set to: {} (AI client will initialize when configuration is complete)",
+                                            providers[selected_idx]
+                                        ))?;
+                                    }
+                                }
+                                break;
+                            }
+                            KeyCode::Esc | KeyCode::Char('q') => {
+                                break;
+                            }
+                            _ => {
+                                // Ignore all other keys
+                                continue;
                             }
                         }
-                        break;
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Esc | KeyCode::Char('q'), .. }) => {
-                        break;
+                    _ => {
+                        // Ignore all other event types
+                        continue;
                     }
-                    _ => {}
                 }
             }
         }
@@ -407,43 +507,65 @@ impl OverlayMenu {
         let mut input = default.to_string();
         let mut cursor_pos = input.len();
 
+        // Clear any pending events in the buffer
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         loop {
             self.render_text_input(prompt, &input, cursor_pos)?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                        return Ok(Some(input));
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
-                        return Ok(None);
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
-                        input.insert(cursor_pos, c);
-                        cursor_pos += 1;
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
-                        if cursor_pos > 0 {
-                            input.remove(cursor_pos - 1);
-                            cursor_pos -= 1;
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+
+                        // Only handle valid input keys
+                        match key_event.code {
+                            KeyCode::Enter => {
+                                return Ok(Some(input));
+                            }
+                            KeyCode::Esc => {
+                                return Ok(None);
+                            }
+                            KeyCode::Char(c) => {
+                                input.insert(cursor_pos, c);
+                                cursor_pos += 1;
+                            }
+                            KeyCode::Backspace => {
+                                if cursor_pos > 0 {
+                                    input.remove(cursor_pos - 1);
+                                    cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Delete => {
+                                if cursor_pos < input.len() {
+                                    input.remove(cursor_pos);
+                                }
+                            }
+                            KeyCode::Left => {
+                                if cursor_pos > 0 {
+                                    cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Right => {
+                                if cursor_pos < input.len() {
+                                    cursor_pos += 1;
+                                }
+                            }
+                            _ => {
+                                // Ignore all other keys
+                                continue;
+                            }
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Delete, .. }) => {
-                        if cursor_pos < input.len() {
-                            input.remove(cursor_pos);
-                        }
+                    _ => {
+                        // Ignore all other event types
+                        continue;
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Left, .. }) => {
-                        if cursor_pos > 0 {
-                            cursor_pos -= 1;
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Right, .. }) => {
-                        if cursor_pos < input.len() {
-                            cursor_pos += 1;
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -482,15 +604,32 @@ impl OverlayMenu {
     }
 
     fn show_session_info(&mut self, app: &App) -> Result<()> {
+        // Clear any pending events in the buffer
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         loop {
             self.render_session_info(app)?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'), .. }) => {
-                        break;
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+
+                        if matches!(key_event.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                            break;
+                        }
+                        // Ignore all other keys
+                        continue;
                     }
-                    _ => {}
+                    _ => {
+                        // Ignore all other event types
+                        continue;
+                    }
                 }
             }
         }
@@ -533,15 +672,32 @@ impl OverlayMenu {
     }
 
     fn show_help(&mut self) -> Result<()> {
+        // Clear any pending events in the buffer
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         loop {
             self.render_help()?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'), .. }) => {
-                        break;
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+
+                        if matches!(key_event.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                            break;
+                        }
+                        // Ignore all other keys
+                        continue;
                     }
-                    _ => {}
+                    _ => {
+                        // Ignore all other event types
+                        continue;
+                    }
                 }
             }
         }
@@ -597,26 +753,47 @@ impl OverlayMenu {
     fn show_confirm_dialog(&mut self, message: &str) -> Result<bool> {
         let mut selected = false; // false for No, true for Yes
 
+        // Clear any pending events in the buffer
+        while event::poll(Duration::from_millis(0))? {
+            let _ = event::read()?;
+        }
+
         loop {
             self.render_confirm_dialog(message, selected)?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                        return Ok(selected);
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+
+                        match key_event.code {
+                            KeyCode::Enter => {
+                                return Ok(selected);
+                            }
+                            KeyCode::Esc => {
+                                return Ok(false);
+                            }
+                            KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+C should exit the app (same as selecting "Yes" on exit confirmation)
+                                return Ok(true);
+                            }
+                            KeyCode::Left | KeyCode::Right | KeyCode::Tab |
+                            KeyCode::Char('h') | KeyCode::Char('l') => {
+                                selected = !selected;
+                            }
+                            _ => {
+                                // Ignore all other keys
+                                continue;
+                            }
+                        }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
-                        return Ok(false);
+                    _ => {
+                        // Ignore all other event types
+                        continue;
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::CONTROL, .. }) => {
-                        // Ctrl+C should exit the app (same as selecting "Yes" on exit confirmation)
-                        return Ok(true);
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Left | KeyCode::Right | KeyCode::Tab, .. }) |
-                    Event::Key(KeyEvent { code: KeyCode::Char('h') | KeyCode::Char('l'), .. }) => {
-                        selected = !selected;
-                    }
-                    _ => {}
                 }
             }
         }

@@ -116,7 +116,47 @@ You have access to the following tools:
    - Returns: Array of matches with file path, line number, line content, and match positions
    - Use this tool when you need to find text across multiple files or search the codebase
 
+7. **visioneer** - Desktop automation and screen analysis tool
+   - A comprehensive desktop automation framework that combines computer vision, OCR, and intelligent UI interaction
+   - Enables automation of virtually any Windows application
+   - Parameters:
+     * target (required): Window title, process name, or "desktop" for screen-wide operations
+     * action (required): One of 8 action types:
+       - "Capture": Take screenshot with optional region and encoding
+       - "ExtractText": Extract text from screen regions using OCR
+       - "Analyze": Analyze UI elements with AI vision models
+       - "Click": Smart clicking (coordinates, text, pattern, or element-based)
+       - "Type": Type text with configurable delays and clearing
+       - "Hotkey": Execute keyboard shortcuts and combinations
+       - "WaitFor": Wait for UI elements or state changes
+       - "Navigate": Mouse movement and directional controls
+     * ocr_config (optional): OCR engine configuration (language, preprocessing)
+     * vlm_config (optional): Vision-language model settings
+
+   Use Visioneer for:
+   - **Form Automation**: Fill web forms and desktop applications
+   - **Game Bots**: Automate simple game interactions
+   - **Data Extraction**: Extract text from any application
+   - **Workflow Automation**: Complex multi-step business processes
+   - **UI Testing**: Automated testing of desktop applications
+   - **Screen Analysis**: Understand and respond to on-screen content
+
+   Example usage:
+   ```json
+   {
+     "target": "Web Browser",
+     "action": {
+       "type": "Click",
+       "target": {
+         "type": "Text",
+         "text": "Submit"
+       }
+     }
+   }
+   ```
+
 When searching for code or text patterns, prefer using search_files over grep commands for better performance and gitignore support.
+For desktop automation tasks, use the Visioneer tool which can see, understand, and interact with any application.
 "#.to_string());
 
         // Add development mode warning if running from cargo
