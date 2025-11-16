@@ -50,26 +50,28 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         // Properly restore terminal state on exit
-        // Following crossterm best practices for cleanup
+        // Order matters: disable raw mode first, then restore cursor
 
         // First disable raw mode to return to normal terminal operation
         let _ = disable_raw_mode();
 
-        // Then execute cursor restoration commands
+        // Reset terminal to default state (this restores colors and attributes)
+        let _ = execute!(std::io::stdout(), crossterm::style::ResetColor);
+
+        // Restore cursor visibility and style
         let _ = execute!(
             std::io::stdout(),
-            // Show the cursor explicitly
             cursor::Show,
-            // Move cursor to a known position
-            cursor::MoveToColumn(0),
-            // Reset any cursor styling to default
             SetCursorStyle::DefaultUserShape
         );
 
-        // Flush to ensure all commands are sent to terminal
+        // Move cursor to beginning of line for clean shell prompt
+        let _ = execute!(std::io::stdout(), cursor::MoveToColumn(0));
+
+        // Force flush all commands to terminal
         let _ = std::io::stdout().flush();
 
-        // Additional backup using console library
+        // Additional backup using console library for maximum compatibility
         let _ = console::Term::stdout().show_cursor();
     }
 }
@@ -137,7 +139,7 @@ async fn main() -> Result<()> {
     );
     println!(
         "{}",
-        console::style("  • Cursor changed to steady bar for better visibility").dim()
+        console::style("  • Cursor changed to blinking block for better visibility").dim()
     );
     println!();
 
@@ -252,7 +254,8 @@ async fn main() -> Result<()> {
                                 if input == "__CTRL_C__" {
                                     // Ctrl+C pressed - show exit confirmation
                                     if menu.show_exit_confirmation(&mut output)? {
-                                        break;
+                                        output.print_system("Goodbye! 👋")?;
+                                        std::process::exit(0);
                                     }
                                     input_handler.clear()?;
                                     input_handler.draw()?;
@@ -269,7 +272,8 @@ async fn main() -> Result<()> {
                                 } else if input == "m" || input == "menu" {
                                     // Menu shortcut
                                     if menu.show_main_menu(&mut app, &mut output)? {
-                                        break;
+                                        output.print_system("Goodbye! 👋")?;
+                                        std::process::exit(0);
                                     }
                                     input_handler.clear()?;
                                     input_handler.draw()?;
@@ -294,7 +298,8 @@ async fn main() -> Result<()> {
                                     // Handle exit commands
                                     if input == "exit" || input == "quit" {
                                         if menu.show_exit_confirmation(&mut output)? {
-                                            break;
+                                            output.print_system("Goodbye! 👋")?;
+                                            std::process::exit(0);
                                         }
                                         input_handler.clear()?;
                                         input_handler.draw()?;
@@ -351,8 +356,8 @@ async fn main() -> Result<()> {
 }
 
 fn setup_bar_cursor() -> Result<()> {
-    // Set cursor to a steady bar cursor (not blinking)
-    std::io::stdout().execute(SetCursorStyle::SteadyBar)?;
+    // Set cursor to blinking block cursor for better visibility
+    std::io::stdout().execute(SetCursorStyle::BlinkingBlock)?;
     Ok(())
 }
 
@@ -394,6 +399,7 @@ async fn handle_cli_command(
             // Show menu
             if menu.show_main_menu(app, output)? {
                 // Exit requested
+                output.print_system("Goodbye! 👋")?;
                 std::process::exit(0);
             }
         }
@@ -410,17 +416,12 @@ async fn handle_cli_command(
             output.print_conversation_summary(&messages)?;
         }
         "/config" => {
-            let config = app.get_config();
-            output.print_system(&format!("Provider: {}", config.ai.provider))?;
-            output.print_system(&format!("Model: {}", config.ai.model))?;
-            output.print_system(&format!(
-                "API Key: {}",
-                if config.ai.api_key.is_empty() {
-                    "Not set"
-                } else {
-                    "Set"
-                }
-            ))?;
+            // Open configuration menu directly
+            if menu.show_config_menu(app, output)? {
+                // Exit requested
+                output.print_system("Goodbye! 👋")?;
+                std::process::exit(0);
+            }
         }
         "/model" => {
             if parts.len() < 2 {
