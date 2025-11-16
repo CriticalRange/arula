@@ -62,6 +62,9 @@ async fn main() -> Result<()> {
     // Install color-eyre for better error reporting
     let _ = color_eyre::install();
 
+    // Show cursor initially
+    let _ = console::Term::stdout().show_cursor();
+
     // Create terminal guard to ensure terminal state is restored on exit
     let _terminal_guard = TerminalGuard;
 
@@ -124,243 +127,219 @@ async fn main() -> Result<()> {
     // NOW enable raw mode for keyboard input detection
     enable_raw_mode()?;
 
-    // Create modern input handler with styling and spinner
+    // Set cursor to be visible and use steady bar style
+    setup_bar_cursor()?;
+
+    // Create input handler with prompt
     let prompt = if cfg!(windows) { "▶" } else { "▶" };
-    let mut input_handler = modern_input::ModernInputHandler::new(prompt);
+    let mut input_handler = input_handler::InputHandler::new(prompt);
     let mut custom_spinner = custom_spinner::CustomSpinner::new();
 
     // Create overlay menu
     let mut menu = OverlayMenu::new();
 
-    // Load history if exists
-    let history_path = dirs::home_dir()
-        .map(|p| p.join(".arula_history"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".arula_history"));
-
-    if let Ok(contents) = std::fs::read_to_string(&history_path) {
-        let lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
-        input_handler.load_history(lines);
-    }
-
-    // Print initial prompt on a new line
-    input_handler.draw()?;
-
     // Main event loop
-    loop {
-        // Process AI responses if waiting
-        while app.is_waiting_for_response() {
-            // Check for keyboard events FIRST (especially ESC to cancel)
-            if event::poll(std::time::Duration::from_millis(10))? {
-                if let Event::Key(key_event) = event::read()? {
-                    if key_event.kind == event::KeyEventKind::Press {
-                        // Check if ESC was pressed to cancel
-                        if key_event.code == event::KeyCode::Esc {
+    'main_loop: loop {
+        // If AI is processing, check for responses and allow cancellation
+        if app.is_waiting_for_response() {
+            // Handle AI responses and cancellation
+            let mut spinner_running = false;
+            while app.is_waiting_for_response() {
+                // Check for ESC to cancel (non-blocking check)
+                if event::poll(std::time::Duration::from_millis(10))? {
+                    if let Event::Key(key_event) = event::read()? {
+                        if key_event.kind == KeyEventKind::Press && key_event.code == crossterm::event::KeyCode::Esc {
+                            // ESC pressed, cancel AI request
                             custom_spinner.stop();
                             output.print_system("🛑 Request cancelled (ESC pressed)")?;
                             app.cancel_request();
-                            input_handler.draw()?;
-                            break; // Exit the waiting loop
-                        }
-                    }
-                }
-            }
-
-            match app.check_ai_response_nonblocking() {
-                Some(response) => {
-                    match response {
-                        app::AiResponse::AgentStreamStart => {
-                            // Stop the spinner (it's on the wrong line)
-                            if custom_spinner.is_running() {
-                                custom_spinner.stop();
-                            }
-
-                            // Restart spinner on the current line
-                            custom_spinner.start("")?;
-                            output.start_ai_message()?;
-                        }
-                        app::AiResponse::AgentStreamText(text) => {
-                            // Stop spinner (it clears its line) - only on first chunk
-                            let is_first_chunk = custom_spinner.is_running();
-                            if is_first_chunk {
-                                custom_spinner.stop();
-                                // Explicitly clear the line and reset cursor
-                                execute!(
-                                    std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine)
-                                )?;
-                                // Add left margin (one space) and print first chunk with markdown
-                                print!(" ");
-                                std::io::stdout().flush()?;
-                                output.print_streaming_chunk(&text)?;
-                            } else {
-                                // Print subsequent chunks with markdown rendering
-                                output.print_streaming_chunk(&text)?;
-                            }
-                        }
-                        app::AiResponse::AgentToolCall {
-                            id: _,
-                            name,
-                            arguments,
-                        } => {
-                            custom_spinner.stop();
-                            output.start_tool_execution(&name, &arguments)?;
-                        }
-                        app::AiResponse::AgentToolResult {
-                            tool_call_id: _,
-                            success,
-                            result,
-                        } => {
-                            let result_text = serde_json::to_string_pretty(&result)
-                                .unwrap_or_else(|_| result.to_string());
-                            output.complete_tool_execution(&result_text, success)?;
-                        }
-                        app::AiResponse::AgentStreamEnd => {
-                            // Stop spinner and cleanup
-                            custom_spinner.stop();
-                            output.stop_spinner();
-                            output.end_line()?;
-                            output.print_context_usage(None)?;
-                            // Redraw input prompt after response completes
-                            println!();
-                            input_handler.draw()?;
-                        }
-                    }
-                }
-                None => {
-                    // No response yet, start spinner if not running
-                    if !custom_spinner.is_running() {
-                        custom_spinner.start("")?;
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-            }
-        }
-
-        // Poll for keyboard events (non-blocking)
-        if event::poll(std::time::Duration::from_millis(10))? {
-            if let Event::Key(key_event) = event::read()? {
-                // Only handle key press events, ignore key release
-                if key_event.kind != event::KeyEventKind::Press {
-                    continue;
-                }
-
-                match input_handler.handle_key(key_event)? {
-                    Some(input) => {
-                        // Handle special signals
-                        if input == "__CTRL_C__" {
-                            // Ctrl+C pressed
-                            if app.is_waiting_for_response() {
-                                custom_spinner.stop();
-                                output.print_system("🛑 Request cancelled")?;
-                                app.cancel_request();
-                                input_handler.draw()?;
-                            } else {
-                                // Show exit confirmation
-                                custom_spinner.stop();
-                                disable_raw_mode()?;
-                                if menu.show_exit_confirmation(&mut output)? {
-                                    break;
-                                }
-                                enable_raw_mode()?;
-                                input_handler.draw()?;
-                            }
-                        } else if input == "__ESC__" {
-                            // ESC pressed - cancel request if waiting
-                            if app.is_waiting_for_response() {
-                                custom_spinner.stop();
-                                output.print_system("🛑 Request cancelled (ESC pressed)")?;
-                                app.cancel_request();
-                                input_handler.draw()?;
-                            }
-                            // Otherwise do nothing (buffer is empty)
-                        } else if input == "__ESC_WARN__" {
-                            // First ESC press with non-empty buffer
-                            output.print_system("⚠️  Press ESC again to clear input")?;
-                            input_handler.draw()?;
-                        } else if input == "__ESC_CLEARED__" {
-                            // Second ESC press - buffer was cleared
-                            output.print_system("✓ Input cleared")?;
-                            input_handler.draw()?;
-                        } else if input == "__CTRL_D__" {
-                            // Ctrl+D - EOF
-                            output.print_system("Goodbye! 👋")?;
                             break;
-                        } else {
-                            // Normal input submitted
-                            let input = input.trim();
+                        }
+                    }
+                }
 
-                            // Check for empty input
-                            if input.is_empty() {
-                                input_handler.draw()?;
-                                continue;
-                            }
-
-                            // Add to history
-                            input_handler.add_to_history(input.to_string());
-
-                            // Check for special shortcuts
-                            if input == "m" || input == "menu" {
-                                custom_spinner.stop();
-                                disable_raw_mode()?;
-                                if menu.show_main_menu(&mut app, &mut output)? {
-                                    break;
+                match app.check_ai_response_nonblocking() {
+                    Some(response) => {
+                        match response {
+                            app::AiResponse::AgentStreamStart => {
+                                if custom_spinner.is_running() {
+                                    custom_spinner.stop();
                                 }
-                                enable_raw_mode()?;
-                                input_handler.draw()?;
-                                continue;
+                                custom_spinner.start("")?;
+                                output.start_ai_message()?;
                             }
-
-                            // Check for exit commands
-                            if input == "exit" || input == "quit" {
-                                output.print_system("Goodbye! 👋")?;
-                                break;
-                            }
-
-                            // Handle command
-                            if input.starts_with('/') {
-                                handle_cli_command(input, &mut app, &mut output, &mut menu).await?;
-                                input_handler.draw()?;
-                            } else {
-                                // Check if we're already waiting for a response
-                                if !app.is_waiting_for_response() {
-                                    // Input handler added a newline, but we want minimal spacing
-                                    // The AI response will start on the next line
-                                    app.send_to_ai(input).await?;
-                                    // Spinner will start in the response loop
-                                } else {
-                                    output.print_system(
-                                        "⚠️  Already processing a request, please wait...",
+                            app::AiResponse::AgentStreamText(text) => {
+                                let is_first_chunk = custom_spinner.is_running();
+                                if is_first_chunk {
+                                    custom_spinner.stop();
+                                    execute!(
+                                        std::io::stdout(),
+                                        cursor::MoveToColumn(0),
+                                        terminal::Clear(terminal::ClearType::CurrentLine)
                                     )?;
-                                    input_handler.draw()?;
+                                    print!(" ");
+                                    std::io::stdout().flush()?;
+                                    output.print_streaming_chunk(&text)?;
+                                } else {
+                                    output.print_streaming_chunk(&text)?;
                                 }
+                            }
+                            app::AiResponse::AgentToolCall {
+                                id: _,
+                                name,
+                                arguments,
+                            } => {
+                                custom_spinner.stop();
+                                output.start_tool_execution(&name, &arguments)?;
+                            }
+                            app::AiResponse::AgentToolResult {
+                                tool_call_id: _,
+                                success,
+                                result,
+                            } => {
+                                let result_text = serde_json::to_string_pretty(&result)
+                                    .unwrap_or_else(|_| result.to_string());
+                                output.complete_tool_execution(&result_text, success)?;
+                            }
+                            app::AiResponse::AgentStreamEnd => {
+                                custom_spinner.stop();
+                                output.stop_spinner();
+                                output.end_line()?;
+                                output.print_context_usage(None)?;
+                                println!();
+                                break; // Exit the AI response loop
                             }
                         }
                     }
                     None => {
-                        // Key handled, no input submitted yet
+                        if !custom_spinner.is_running() {
+                            custom_spinner.start("")?;
+                        }
                     }
                 }
             }
+            continue; // Continue to next iteration to get input
+        }
+
+        // Draw initial prompt
+        input_handler.draw()?;
+
+        // Input handling loop
+        loop {
+            if event::poll(std::time::Duration::from_millis(100))? {
+                if let Event::Key(key_event) = event::read()? {
+                    if key_event.kind == KeyEventKind::Press {
+                        match input_handler.handle_key(key_event)? {
+                            Some(input) => {
+                                // Handle special commands
+                                if input == "__CTRL_C__" {
+                                    // Ctrl+C pressed - show exit confirmation
+                                    if menu.show_exit_confirmation(&mut output)? {
+                                        break;
+                                    }
+                                    input_handler.clear()?;
+                                    input_handler.draw()?;
+                                    continue 'main_loop;
+                                } else if input == "__CTRL_D__" {
+                                    // Ctrl+D - EOF
+                                    output.print_system("Goodbye! 👋")?;
+                                    break;
+                                } else if input == "__ESC__" {
+                                    // ESC pressed, continue
+                                    input_handler.clear()?;
+                                    input_handler.draw()?;
+                                    continue 'main_loop;
+                                } else if input == "m" || input == "menu" {
+                                    // Menu shortcut
+                                    if menu.show_main_menu(&mut app, &mut output)? {
+                                        break;
+                                    }
+                                    input_handler.clear()?;
+                                    input_handler.draw()?;
+                                    continue 'main_loop;
+                                } else if input.starts_with('/') {
+                                    // Handle CLI commands
+                                    handle_cli_command(&input, &mut app, &mut output, &mut menu).await?;
+                                    input_handler.clear()?;
+                                    input_handler.draw()?;
+                                    continue 'main_loop;
+                                } else {
+                                    // Handle empty input
+                                    if input.trim().is_empty() {
+                                        input_handler.clear()?;
+                                        input_handler.draw()?;
+                                        continue;
+                                    }
+
+                                    // Add to history
+                                    input_handler.add_to_history(input.clone());
+
+                                    // Handle exit commands
+                                    if input == "exit" || input == "quit" {
+                                        if menu.show_exit_confirmation(&mut output)? {
+                                            break;
+                                        }
+                                        input_handler.clear()?;
+                                        input_handler.draw()?;
+                                        continue 'main_loop;
+                                    }
+
+                                    // Send to AI
+                                    if cli.verbose {
+                                        output.print_system(&format!("DEBUG: About to call app.send_to_ai with input: '{}'", input))?;
+                                    }
+                                    match app.send_to_ai(&input).await {
+                                        Ok(()) => {
+                                            // AI request sent successfully
+                                            if cli.verbose {
+                                                output.print_system("DEBUG: AI request sent successfully")?;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Handle AI client errors gracefully
+                                            if cli.verbose {
+                                                output.print_system(&format!("DEBUG: AI send failed with error: {}", e))?;
+                                            }
+                                            if e.to_string().contains("AI client not initialized") {
+                                                output.print_error("AI client not configured. Use /config to set up AI settings.")?;
+                                                output.print_system("💡 Try: /config or press 'm' for the configuration menu")?;
+                                            } else {
+                                                output.print_error(&format!("Failed to send to AI: {}", e))?;
+                                            }
+                                        }
+                                    }
+
+                                    // Clear input after sending
+                                    input_handler.clear()?;
+                                    break; // Exit input loop to go to AI response handling
+                                }
+                            }
+                            None => {
+                                // Continue handling input
+                                input_handler.draw()?;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No event, continue
+                continue;
+            }
         }
     }
-
-    // Save history
-    let history_lines = input_handler.get_history().join("\n");
-    let _ = std::fs::write(&history_path, history_lines);
 
     // Cursor will be automatically shown by CursorGuard's Drop implementation
 
     Ok(())
 }
 
-fn setup_bar_cursor() -> Result<(), Box<dyn std::error::Error>> {
+fn setup_bar_cursor() -> Result<()> {
     // Set cursor to a steady bar cursor (not blinking)
     std::io::stdout().execute(SetCursorStyle::SteadyBar)?;
     Ok(())
 }
 
-fn restore_default_cursor() -> Result<(), Box<dyn std::error::Error>> {
+fn restore_default_cursor() -> Result<()> {
     // Restore cursor to default blinking line
     std::io::stdout().execute(SetCursorStyle::DefaultUserShape)?;
     Ok(())
