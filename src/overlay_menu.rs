@@ -120,7 +120,7 @@ impl OverlayMenu {
 
                     app.config.ai.provider = providers[provider_idx].to_string();
                     let _ = app.config.save();
-                    let _ = app.initialize_api_client();
+                    let _ = app.initialize_agent_client();
                     output.print_system(&format!("✅ Provider set to: {}", providers[provider_idx]))?;
                 }
                 Some(1) => {
@@ -142,7 +142,7 @@ impl OverlayMenu {
 
                     app.config.ai.api_url = url.clone();
                     let _ = app.config.save();
-                    let _ = app.initialize_api_client();
+                    let _ = app.initialize_agent_client();
                     output.print_system(&format!("✅ API URL set to: {}", url))?;
                 }
                 Some(3) => {
@@ -155,7 +155,7 @@ impl OverlayMenu {
                     if !key.is_empty() {
                         app.config.ai.api_key = key;
                         let _ = app.config.save();
-                        let _ = app.initialize_api_client();
+                        let _ = app.initialize_agent_client();
                         output.print_system("✅ API Key updated")?;
                     }
                 }

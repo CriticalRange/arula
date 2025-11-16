@@ -972,7 +972,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search for text patterns in files using parallel walker with gitignore support. Fast and efficient for searching large codebases."
+        "Search for text patterns in files using parallel walker with gitignore support. Fast and efficient for searching large codebases. Supports file pattern filtering, case-sensitive options, and provides detailed match results."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -981,16 +981,16 @@ impl Tool for SearchTool {
             "Search for text patterns in files"
         )
         .param("query", "string")
-        .description("query", "The text pattern to search for")
+        .description("query", "The text pattern to search for. Can be a simple string or part of a larger expression.")
         .required("query")
         .param("path", "string")
-        .description("path", "The directory path to search in (default: current directory)")
+        .description("path", "The directory path to search in. Use '.' for current directory (default).")
         .param("file_pattern", "string")
-        .description("file_pattern", "File pattern to match (e.g., '*.rs', '*.txt')")
+        .description("file_pattern", "File pattern to match (e.g., '*.rs', '*.py', '*.txt', '*.md'). Searches all files if not specified.")
         .param("case_sensitive", "boolean")
-        .description("case_sensitive", "Whether the search should be case sensitive (default: false)")
+        .description("case_sensitive", "Whether the search should be case sensitive (default: false). Useful for searching code with specific capitalization.")
         .param("max_results", "integer")
-        .description("max_results", "Maximum number of results to return (default: 100)")
+        .description("max_results", "Maximum number of results to return (default: 100). Helps prevent overwhelming output in large codebases.")
         .build()
     }
 
@@ -1008,7 +1008,7 @@ impl Tool for SearchTool {
         } = params;
 
         if query.trim().is_empty() {
-            return Err("Search query cannot be empty".to_string());
+            return Err("Search query cannot be empty. Please provide a non-empty text pattern to search for in files.".to_string());
         }
 
         let search_path = path.as_deref().unwrap_or(".");
@@ -1017,17 +1017,20 @@ impl Tool for SearchTool {
 
         // Build glob matcher if pattern is provided
         let glob_matcher = if let Some(ref pattern) = file_pattern {
-            use ignore::gitignore::GitignoreBuilder;
-            let mut builder = GitignoreBuilder::new(search_path);
-            builder.add_line(None, pattern).ok();
-            Some(builder.build().map_err(|e| format!("Invalid glob pattern: {}", e))?)
+            use globset::{Glob, GlobSetBuilder};
+            // Create a proper glob pattern for file inclusion
+            let glob = Glob::new(pattern)
+                .map_err(|e| format!("Invalid file pattern '{}': {}. Common patterns: '*.rs', '*.py', '*.txt', '*.md'", pattern, e))?;
+            let mut builder = GlobSetBuilder::new();
+            builder.add(glob);
+            Some(builder.build().map_err(|e| format!("Failed to process file pattern '{}': {}", pattern, e))?)
         } else {
             None
         };
 
         // Validate path exists
         if !Path::new(search_path).exists() {
-            return Err(format!("Search path '{}' does not exist", search_path));
+            return Err(format!("Search path '{}' does not exist or is not accessible. Please provide a valid directory path.", search_path));
         }
 
         // Shared state for collecting results
@@ -1083,8 +1086,7 @@ impl Tool for SearchTool {
 
                 // Apply glob pattern filter if specified
                 if let Some(ref matcher) = glob_matcher {
-                    let matched = matcher.matched(path, false);
-                    if matched.is_ignore() {
+                    if !matcher.is_match(path) {
                         return WalkState::Continue;
                     }
                 }
@@ -1162,11 +1164,26 @@ impl Tool for SearchTool {
             Err(arc) => *arc.lock().unwrap(),
         };
 
+        // Provide helpful message when no matches found
+        let success = if final_matches.is_empty() && files_count > 0 {
+            // No matches found, but files were searched - this is still a successful operation
+            true
+        } else if files_count == 0 {
+            // No files were searched - likely due to file pattern filtering or path issues
+            if file_pattern.is_some() {
+                return Err(format!("No files matched the file pattern '{}'. Try using a different pattern like '*.rs', '*.py', '*.txt' or remove the pattern to search all files.", file_pattern.unwrap()));
+            } else {
+                return Err("No searchable files found in the specified directory. The directory might be empty or contain only binary files.".to_string());
+            }
+        } else {
+            true
+        };
+
         Ok(SearchResult {
             matches: final_matches,
             total_matches,
             files_searched: files_count,
-            success: true,
+            success,
         })
     }
 }

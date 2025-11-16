@@ -78,3 +78,24 @@ arula.log
 
 # Test and build artifacts
 test_results.mdARULA.md
+
+# Backup files (text editor backups, etc.)
+*.backup.*
+*.bak
+*~
+*.orig
+*.rej
+
+# Test output files
+test_*.txt
+test_*.md
+
+# Temporary test directories
+test_search/
+
+# Script files that shouldn't be tracked
+*_increment.sh
+
+# Banana test files
+banana.md*
+banana*.md*
