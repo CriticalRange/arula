@@ -75,11 +75,19 @@ impl OverlayMenu {
     }
 
     pub fn show_exit_confirmation(&mut self, output: &mut OutputHandler) -> Result<bool> {
+        use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
         println!();
+        // Temporarily disable raw mode for dialoguer
+        disable_raw_mode()?;
+
         let result = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt("Exit ARULA?")
             .default(false)
             .interact()?;
+
+        // Re-enable raw mode
+        enable_raw_mode()?;
 
         if result {
             output.print_system("Goodbye! 👋")?;

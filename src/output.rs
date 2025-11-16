@@ -438,13 +438,22 @@ impl OutputHandler {
     }
 
     pub fn print_streaming_chunk(&mut self, chunk: &str) -> io::Result<()> {
+        // Stop spinner if active to print the chunk
+        if self.spinner.is_some() {
+            self.stop_spinner();
+            print!("\r\x1b[K"); // Clear the spinner line
+        }
+
+        // Print the chunk
         print!("{}", chunk);
         std::io::stdout().flush()?;
+
         Ok(())
     }
 
     pub fn start_ai_message(&mut self) -> io::Result<()> {
-        // No prefix - just start with clean output
+        // Don't stop spinner here - let it keep running until first text chunk
+        // Just flush to ensure any pending output is written
         std::io::stdout().flush()?;
         Ok(())
     }
@@ -509,6 +518,11 @@ impl OutputHandler {
                 std::io::stdout().flush().unwrap_or(());
             }
         }
+    }
+
+    /// Check if spinner is currently active
+    pub fn has_spinner(&self) -> bool {
+        self.spinner.is_some()
     }
 
     /// Print content above the spinner while preserving input at bottom

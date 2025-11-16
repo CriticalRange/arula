@@ -443,6 +443,8 @@ The user will manually rebuild after exiting the application.
         self.cancellation_token.cancel();
         // Create a new token for future requests
         self.cancellation_token = CancellationToken::new();
+        // Clear the response receiver so is_waiting_for_response() returns false
+        self.ai_response_rx = None;
     }
 
     /// Check if the current request is cancelled
