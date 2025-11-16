@@ -4,7 +4,7 @@ use crossterm::{
     cursor::{self, MoveDown, MoveUp, SetCursorStyle},
     event::{self, Event, KeyEventKind},
     execute,
-    terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
+    terminal::{self, enable_raw_mode, disable_raw_mode, ClearType},
     ExecutableCommand,
 };
 use std::io::Write;
@@ -49,11 +49,28 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        // Restore default cursor style on exit
-        let _ = restore_default_cursor();
-        let _ = console::Term::stdout().show_cursor();
-        // Disable raw mode
+        // Properly restore terminal state on exit
+        // Following crossterm best practices for cleanup
+
+        // First disable raw mode to return to normal terminal operation
         let _ = disable_raw_mode();
+
+        // Then execute cursor restoration commands
+        let _ = execute!(
+            std::io::stdout(),
+            // Show the cursor explicitly
+            cursor::Show,
+            // Move cursor to a known position
+            cursor::MoveToColumn(0),
+            // Reset any cursor styling to default
+            SetCursorStyle::DefaultUserShape
+        );
+
+        // Flush to ensure all commands are sent to terminal
+        let _ = std::io::stdout().flush();
+
+        // Additional backup using console library
+        let _ = console::Term::stdout().show_cursor();
     }
 }
 
@@ -339,11 +356,6 @@ fn setup_bar_cursor() -> Result<()> {
     Ok(())
 }
 
-fn restore_default_cursor() -> Result<()> {
-    // Restore cursor to default blinking line
-    std::io::stdout().execute(SetCursorStyle::DefaultUserShape)?;
-    Ok(())
-}
 
 async fn handle_cli_command(
     input: &str,
