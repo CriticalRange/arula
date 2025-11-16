@@ -16,7 +16,6 @@ pub struct InputHandler {
     temp_buffer: Option<String>, // Temporary storage when navigating history
     prompt: String,
     max_history: usize,
-    esc_pressed_once: bool, // Track if ESC was pressed once for double-press clear
 }
 
 impl InputHandler {
@@ -29,7 +28,6 @@ impl InputHandler {
             temp_buffer: None,
             prompt: prompt.to_string(),
             max_history: 1000,
-            esc_pressed_once: false,
         }
     }
 
@@ -73,36 +71,68 @@ impl InputHandler {
 
     /// Draw the input prompt and buffer at current cursor position
     pub fn draw(&self) -> io::Result<()> {
-        // Clear current line
+        // Get terminal width for single-line scrolling
+        let (width, _) = terminal::size()?;
+        let width = width as usize;
+
+        let prompt_len = self.prompt.chars().count();
+        let buffer_len = self.buffer.chars().count();
+
+        // Build the display content first
+        let display_content = if prompt_len + buffer_len <= width {
+            // Buffer fits entirely on screen
+            format!("{}{}", self.prompt, self.buffer)
+        } else {
+            // Buffer is longer than screen - implement horizontal scrolling
+            let available_width = width.saturating_sub(prompt_len);
+            if available_width == 0 {
+                // Screen too small, just show prompt
+                self.prompt.clone()
+            } else if self.cursor_pos < available_width {
+                // Cursor is in the first screen position
+                let visible_end = self.buffer.chars().take(available_width).collect::<String>();
+                format!("{}{}", self.prompt, visible_end)
+            } else {
+                // Cursor is beyond the first screen - scroll to keep cursor visible
+                let scroll_start = self.cursor_pos - available_width + 1;
+                let visible_chars: String = self.buffer.chars()
+                    .skip(scroll_start)
+                    .take(available_width)
+                    .collect();
+                format!("{}{}", self.prompt, visible_chars)
+            }
+        };
+
+        // Clear and print content in one atomic operation to reduce cursor flash
         execute!(
             io::stdout(),
             cursor::MoveToColumn(0),
-            terminal::Clear(ClearType::CurrentLine)
+            terminal::Clear(ClearType::CurrentLine),
+            cursor::Show,
+            crossterm::style::Print(display_content)
         )?;
 
-        // Print prompt and buffer without extra spacing
-        print!("{}{}", self.prompt, self.buffer);
+        // Position cursor correctly after content is displayed
+        let cursor_col = if prompt_len + buffer_len <= width {
+            (prompt_len + self.cursor_pos) as u16
+        } else {
+            let available_width = width.saturating_sub(prompt_len);
+            if available_width == 0 {
+                prompt_len as u16
+            } else if self.cursor_pos < available_width {
+                (prompt_len + self.cursor_pos) as u16
+            } else {
+                (prompt_len + available_width - 1) as u16
+            }
+        };
 
-        // Position cursor correctly
-        let cursor_col = (self.prompt.chars().count() + self.cursor_pos) as u16;
         execute!(io::stdout(), cursor::MoveToColumn(cursor_col))?;
-
         io::stdout().flush()?;
         Ok(())
     }
 
-    /// Reset ESC pressed flag (call when user types anything)
-    fn reset_esc_flag(&mut self) {
-        self.esc_pressed_once = false;
-    }
-
     /// Handle a key event, returns Some(input) if user submitted
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<Option<String>> {
-        // Reset ESC flag on any key except ESC itself
-        if key.code != KeyCode::Esc {
-            self.reset_esc_flag();
-        }
-
         match key.code {
             KeyCode::Enter => {
                 // Submit input
@@ -286,24 +316,8 @@ impl InputHandler {
                 Ok(None)
             }
             KeyCode::Esc => {
-                // ESC - return special signal for cancellation or clear buffer
-                // If buffer is not empty, implement double-press to clear
-                if !self.buffer.is_empty() {
-                    if self.esc_pressed_once {
-                        // Second press - clear the buffer
-                        self.buffer.clear();
-                        self.cursor_pos = 0;
-                        self.esc_pressed_once = false;
-                        Ok(Some("__ESC_CLEARED__".to_string()))
-                    } else {
-                        // First press - set flag and warn
-                        self.esc_pressed_once = true;
-                        Ok(Some("__ESC_WARN__".to_string()))
-                    }
-                } else {
-                    // Buffer is empty, just send ESC signal
-                    Ok(Some("__ESC__".to_string()))
-                }
+                // ESC - return special signal for cancellation
+                Ok(Some("__ESC__".to_string()))
             }
             _ => Ok(None),
         }
