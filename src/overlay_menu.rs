@@ -41,19 +41,19 @@ impl OverlayMenu {
         Self {
             selected_index: 0,
             main_options: vec![
-                "💬 Continue Chat".to_string(),
-                "🔧 Configuration".to_string(),
-                "📊 Session Info".to_string(),
-                "🗑️  Clear Chat".to_string(),
-                "❓ Help".to_string(),
-                "🚪 Exit".to_string(),
+                "▶ Chat".to_string(),
+                "⚙️  Settings".to_string(),
+                "📈 Session".to_string(),
+                "🧹 Clear".to_string(),
+                "💡 Help".to_string(),
+                "✕ Exit".to_string(),
             ],
             config_options: vec![
                 "Provider".to_string(),
                 "Model".to_string(),
                 "API URL".to_string(),
                 "API Key".to_string(),
-                "← Back to Main Menu".to_string(),
+                "← Back".to_string(),
             ],
             is_in_config: false,
             animation_offset: 0,
@@ -160,14 +160,13 @@ impl OverlayMenu {
     fn run_menu_loop(&mut self, app: &mut App, output: &mut OutputHandler) -> Result<bool> {
         let mut should_exit_app = false;
 
-        // More aggressive event clearing with small delay to ensure all events are processed
+        // Comprehensive event clearing to prevent submenu issues
         std::thread::sleep(Duration::from_millis(50));
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read()?;
-        }
-        // Second pass to catch any events that might have arrived during clearing
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read()?;
+        for _ in 0..5 { // Multiple passes to ensure all events are cleared
+            while event::poll(Duration::from_millis(0))? {
+                let _ = event::read()?;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         loop {
@@ -264,9 +263,13 @@ impl OverlayMenu {
             KeyCode::Left | KeyCode::Char('h') if self.is_in_config => {
                 self.is_in_config = false;
                 self.selected_index = 0;
-                // Clear any pending events when returning to main menu to prevent immediate issues
-                while event::poll(Duration::from_millis(0))? {
-                    let _ = event::read()?;
+                // More aggressive event clearing when returning to main menu
+                std::thread::sleep(Duration::from_millis(20));
+                for _ in 0..3 {
+                    while event::poll(Duration::from_millis(0))? {
+                        let _ = event::read()?;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 Ok(MenuAction::Continue)
             }
@@ -280,9 +283,13 @@ impl OverlayMenu {
             1 => { // Configuration
                 self.is_in_config = true;
                 self.selected_index = 0;
-                // Clear any pending events when switching to submenu to prevent immediate closure
-                while event::poll(Duration::from_millis(0))? {
-                    let _ = event::read()?;
+                // More aggressive event clearing when switching to submenu
+                std::thread::sleep(Duration::from_millis(20)); // Small delay
+                for _ in 0..3 { // Multiple passes to clear all pending events
+                    while event::poll(Duration::from_millis(0))? {
+                        let _ = event::read()?;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 Ok(false)
             }
@@ -388,9 +395,13 @@ impl OverlayMenu {
             4 | _ => { // Back
                 self.is_in_config = false;
                 self.selected_index = 0;
-                // Clear any pending events when returning to main menu to prevent immediate issues
-                while event::poll(Duration::from_millis(0))? {
-                    let _ = event::read()?;
+                // More aggressive event clearing when returning to main menu
+                std::thread::sleep(Duration::from_millis(20));
+                for _ in 0..3 {
+                    while event::poll(Duration::from_millis(0))? {
+                        let _ = event::read()?;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 Ok(false)
             }
@@ -405,9 +416,13 @@ impl OverlayMenu {
             .position(|&p| p == current_config.ai.provider)
             .unwrap_or(0);
 
-        // Clear any pending events in the buffer
-        while event::poll(Duration::from_millis(0))? {
-            let _ = event::read()?;
+        // Comprehensive event clearing before provider selector
+        std::thread::sleep(Duration::from_millis(20));
+        for _ in 0..3 {
+            while event::poll(Duration::from_millis(0))? {
+                let _ = event::read()?;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
 
         // Create a temporary selection for provider
@@ -804,37 +819,69 @@ impl OverlayMenu {
 
         stdout().queue(terminal::Clear(terminal::ClearType::All))?;
 
-        let menu_width = 40.min(cols - 4);
-        let menu_height = 6u16;
+        let menu_width = 50.min(cols - 8);
+        let menu_height = 8u16;
         let start_x = (cols - menu_width) / 2;
         let start_y = (rows - menu_height) / 2 + self.animation_offset;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height, "Confirm")?;
+        // Draw modern box for confirmation
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "CONFIRM")?;
+
+        // Draw title
+        let title_y = start_y + 1;
+        let title = "?";
+        stdout().queue(MoveTo(start_x + menu_width / 2 - 1, title_y))?
+              .queue(SetForegroundColor(Color::Yellow))?
+              .queue(Print(title.bold()))?
+              .queue(ResetColor)?;
 
         // Message
-        stdout().queue(MoveTo(start_x + 2, start_y + 2))?
-              .queue(Print(message))?;
+        stdout().queue(MoveTo(start_x + 2, start_y + 3))?
+              .queue(SetForegroundColor(Color::White))?
+              .queue(Print(message))?
+              .queue(ResetColor)?;
 
-        // Options
-        let no_text = if selected { " No " } else { "[No]" };
-        let yes_text = if selected { "[Yes]" } else { " Yes " };
+        // Modern styled options
+        let no_text = "NO";
+        let yes_text = "YES";
 
-        let options_y = start_y + 4;
-        let no_x = start_x + menu_width / 2 - 8;
+        let options_y = start_y + 5;
+        let no_x = start_x + menu_width / 2 - 10;
         let yes_x = start_x + menu_width / 2 + 2;
 
-        let no_display = if selected { no_text } else { &no_text.yellow_bold() };
-        let yes_display = if selected { &yes_text.yellow_bold() } else { yes_text };
+        // Draw NO option
+        if !selected {
+            // Unselected
+            stdout().queue(MoveTo(no_x, options_y))?
+                  .queue(SetBackgroundColor(Color::DarkGrey))?
+                  .queue(SetForegroundColor(Color::White))?
+                  .queue(Print(format!(" {} ", no_text)))?
+                  .queue(ResetColor)?;
+        } else {
+            // Selected
+            stdout().queue(MoveTo(no_x, options_y))?
+                  .queue(SetBackgroundColor(Color::Red))?
+                  .queue(SetForegroundColor(Color::White))?
+                  .queue(Print(format!(" {} ", no_text.bold())))?
+                  .queue(ResetColor)?;
+        }
 
-        stdout().queue(MoveTo(no_x, options_y))?
-              .queue(SetForegroundColor(Color::Red))?
-              .queue(Print(no_display))?
-              .queue(ResetColor)?;
-
-        stdout().queue(MoveTo(yes_x, options_y))?
-              .queue(SetForegroundColor(Color::Green))?
-              .queue(Print(yes_display))?
-              .queue(ResetColor)?;
+        // Draw YES option
+        if selected {
+            // Selected
+            stdout().queue(MoveTo(yes_x, options_y))?
+                  .queue(SetBackgroundColor(Color::Green))?
+                  .queue(SetForegroundColor(Color::White))?
+                  .queue(Print(format!(" {} ", yes_text.bold())))?
+                  .queue(ResetColor)?;
+        } else {
+            // Unselected
+            stdout().queue(MoveTo(yes_x, options_y))?
+                  .queue(SetBackgroundColor(Color::DarkGrey))?
+                  .queue(SetForegroundColor(Color::White))?
+                  .queue(Print(format!(" {} ", yes_text)))?
+                  .queue(ResetColor)?;
+        }
 
         stdout().flush()?;
         Ok(())
@@ -858,30 +905,58 @@ impl OverlayMenu {
     fn render_main_menu(&self) -> Result<()> {
         let (cols, rows) = size()?;
 
-        let menu_width = 40.min(cols - 4);
-        let menu_height = self.main_options.len() + 4;
+        let menu_width = 50.min(cols - 8);
+        let menu_height = 12; // Fixed height for better layout
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height as u16) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2 + self.animation_offset;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height as u16, "🚀 ARULA MENU")?;
+        // Draw modern box with gradient effect
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "ARULA")?;
 
+        // Draw title with modern styling
+        let title_y = start_y + 2;
+        let title = "● MENU";
+        let title_len = title.len() as u16;
+        let title_x = if menu_width > title_len + 2 {
+            start_x + menu_width / 2 - title_len / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(title_x, title_y))?
+              .queue(SetForegroundColor(Color::Cyan))?
+              .queue(Print(title))?
+              .queue(ResetColor)?;
+
+        // Draw menu items with modern styling
+        let items_start_y = start_y + 4;
         for (i, option) in self.main_options.iter().enumerate() {
-            let y = start_y + 2 + i as u16;
-            let prefix = if i == self.selected_index { "▶ " } else { "  " };
-            let text = if i == self.selected_index {
-                format!("{}{}", prefix, option).yellow_bold()
-            } else {
-                format!("{}{}", prefix, option)
-            };
+            let y = items_start_y + i as u16;
 
-            stdout().queue(MoveTo(start_x + 2, y))?
-                  .queue(Print(text))?;
+            if i == self.selected_index {
+                // Selected item with modern highlight
+                self.draw_selected_item(start_x + 2, y, menu_width - 4, option)?;
+            } else {
+                // Unselected item with subtle styling
+                stdout().queue(MoveTo(start_x + 4, y))?
+                      .queue(SetForegroundColor(Color::DarkGrey))?
+                      .queue(Print(option))?
+                      .queue(ResetColor)?;
+            }
         }
 
-        // Instructions
-        let instruction_y = start_y + menu_height as u16;
-        stdout().queue(MoveTo(start_x + 2, instruction_y))?
-              .queue(Print("↑↓ or j/k: Navigate  Enter: Select  q/ESC: Exit".dim()))?;
+        // Draw modern help text
+        let help_y = start_y + menu_height - 2;
+        let help_text = "↑↓ Navigate • Enter Select • ESC Exit";
+        let help_len = help_text.len() as u16;
+        let help_x = if menu_width > help_len + 2 {
+            start_x + menu_width / 2 - help_len / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(help_x, help_y))?
+              .queue(SetForegroundColor(Color::DarkGrey))?
+              .queue(Print(help_text))?
+              .queue(ResetColor)?;
 
         Ok(())
     }
@@ -892,49 +967,170 @@ impl OverlayMenu {
         let config = app.get_config();
         let mut display_options = self.config_options.clone();
 
-        // Update display values
-        display_options[0] = format!("Provider: {}", config.ai.provider);
-        display_options[1] = format!("Model: {}", config.ai.model);
-        display_options[2] = format!("API URL: {}", config.ai.api_url);
+        // Update display values with modern styling
+        display_options[0] = format!("○ Provider: {}", config.ai.provider);
+        display_options[1] = format!("○ Model: {}", config.ai.model);
+        display_options[2] = format!("○ API URL: {}", config.ai.api_url);
         display_options[3] = format!(
-            "API Key: {}",
+            "○ API Key: {}",
             if config.ai.api_key.is_empty() {
                 "Not set"
             } else {
-                "********"
+                "••••••••"
             }
         );
 
-        let menu_width = 50.min(cols - 4);
-        let menu_height = display_options.len() + 4;
+        let menu_width = 60.min(cols - 8);
+        let menu_height = 12; // Fixed height for consistency
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height as u16) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2 + self.animation_offset;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height as u16, "🔧 Configuration")?;
+        // Draw modern box
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "SETTINGS")?;
 
+        // Draw title with modern styling
+        let title_y = start_y + 2;
+        let title = "⚙️ SETTINGS";
+        let title_len = title.len() as u16;
+        let title_x = if menu_width > title_len + 2 {
+            start_x + menu_width / 2 - title_len / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(title_x, title_y))?
+              .queue(SetForegroundColor(Color::Cyan))?
+              .queue(Print(title))?
+              .queue(ResetColor)?;
+
+        // Draw config items with modern styling
+        let items_start_y = start_y + 4;
         for (i, option) in display_options.iter().enumerate() {
-            let y = start_y + 2 + i as u16;
-            let prefix = if i == self.selected_index { "▶ " } else { "  " };
-            let text = if i == self.selected_index {
-                format!("{}{}", prefix, option).yellow_bold()
-            } else {
-                format!("{}{}", prefix, option)
-            };
+            let y = items_start_y + i as u16;
 
-            stdout().queue(MoveTo(start_x + 2, y))?
-                  .queue(Print(text))?;
+            if i == self.selected_index {
+                // Selected item with modern highlight
+                self.draw_selected_item(start_x + 2, y, menu_width - 4, option)?;
+            } else {
+                // Unselected item with subtle styling
+                stdout().queue(MoveTo(start_x + 4, y))?
+                      .queue(SetForegroundColor(Color::DarkGrey))?
+                      .queue(Print(option))?
+                      .queue(ResetColor)?;
+            }
         }
 
-        // Instructions
-        let instruction_y = start_y + menu_height as u16;
-        stdout().queue(MoveTo(start_x + 2, instruction_y))?
-              .queue(Print("↑↓ or j/k: Navigate  Enter: Edit  h/←: Back  q/ESC: Exit".dim()))?;
+        // Draw modern help text
+        let help_y = start_y + menu_height - 2;
+        let help_text = "↑↓ Edit • Enter Select • ← Back • ESC Exit";
+        let help_len = help_text.len() as u16;
+        let help_x = if menu_width > help_len + 2 {
+            start_x + menu_width / 2 - help_len / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(help_x, help_y))?
+              .queue(SetForegroundColor(Color::DarkGrey))?
+              .queue(Print(help_text))?
+              .queue(ResetColor)?;
+
+        Ok(())
+    }
+
+    fn draw_modern_box(&self, x: u16, y: u16, width: u16, height: u16, _title: &str) -> Result<()> {
+        // Modern box with rounded corners - simplified to avoid overflow issues
+        let top_left = "╭";
+        let top_right = "╮";
+        let bottom_left = "╰";
+        let bottom_right = "╯";
+        let horizontal = "─";
+        let vertical = "│";
+
+        // Validate dimensions to prevent overflow
+        if width < 2 || height < 2 {
+            return Ok(());
+        }
+
+        // Clear the area first with bounds checking
+        for row in y..std::cmp::min(y + height, u16::MAX) {
+            stdout().queue(MoveTo(x, row))?;
+            for _col in x..std::cmp::min(x + width, u16::MAX) {
+                stdout().queue(Print(" "))?;
+            }
+        }
+
+        // Draw simple gradient border (cyan to blue)
+        let height_f = height as f32;
+        for i in 0..height {
+            if height_f == 0.0 { break; }
+            let progress = i as f32 / height_f;
+
+            // Use closest terminal color (simplified to Cyan/Blue)
+            let border_color = if progress < 0.5 { Color::Cyan } else { Color::Blue };
+
+            stdout().queue(SetForegroundColor(border_color))?;
+            stdout().queue(MoveTo(x, y + i))?.queue(Print(vertical))?;
+            stdout().queue(MoveTo(x + width.saturating_sub(1), y + i))?.queue(Print(vertical))?;
+        }
+
+        // Top border with gradient
+        stdout().queue(SetForegroundColor(Color::Cyan))?;
+        stdout().queue(MoveTo(x, y))?.queue(Print(top_left))?;
+        for _i in 1..width.saturating_sub(1) {
+            stdout().queue(Print(horizontal))?;
+        }
+        stdout().queue(Print(top_right))?;
+
+        // Bottom border with gradient
+        stdout().queue(SetForegroundColor(Color::Blue))?;
+        stdout().queue(MoveTo(x, y + height.saturating_sub(1)))?.queue(Print(bottom_left))?;
+        for _i in 1..width.saturating_sub(1) {
+            stdout().queue(Print(horizontal))?;
+        }
+        stdout().queue(Print(bottom_right))?;
+
+        stdout().queue(ResetColor)?;
+        Ok(())
+    }
+
+    fn draw_selected_item(&self, x: u16, y: u16, width: u16, text: &str) -> Result<()> {
+        // Validate dimensions
+        if width < 3 {
+            return Ok(());
+        }
+
+        // Draw selection background with modern style
+        stdout().queue(MoveTo(x, y))?;
+
+        // Background fill with bounds checking
+        for _i in 0..width {
+            stdout().queue(SetBackgroundColor(Color::DarkBlue))?;
+            stdout().queue(Print(" "))?;
+        }
+
+        // Reset background for text
+        stdout().queue(ResetColor)?;
+
+        // Draw text with proper spacing and color - safely format
+        let display_text = format!("▶ {}", text);
+        let safe_text = if display_text.len() > width.saturating_sub(4) as usize {
+            // Truncate if too long
+            let safe_len = width.saturating_sub(7) as usize;
+            format!("▶ {}...", &text[..safe_len.min(text.len())])
+        } else {
+            display_text
+        };
+
+        stdout().queue(MoveTo(x + 2, y))?
+              .queue(SetBackgroundColor(Color::DarkBlue))?
+              .queue(SetForegroundColor(Color::White))?
+              .queue(Print(safe_text))?
+              .queue(ResetColor)?;
 
         Ok(())
     }
 
     fn draw_box(&self, x: u16, y: u16, width: u16, height: u16, title: &str) -> Result<()> {
-        // Box corners and edges
+        // Keep the old method for compatibility
         let top_left = "╔";
         let top_right = "╗";
         let bottom_left = "╚";
