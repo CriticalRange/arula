@@ -142,8 +142,8 @@ impl InputHandler {
                 self.history_index = None;
                 self.temp_buffer = None;
 
-                // Move to new line
-                println!();
+                // Don't add newline here - main.rs will handle layout for AI response
+                // This prevents extra blank lines after user submits input
 
                 Ok(Some(input))
             }

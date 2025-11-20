@@ -231,19 +231,16 @@ async fn main() -> Result<()> {
                                 if custom_spinner.is_running() {
                                     custom_spinner.stop();
                                 }
-                                custom_spinner.start_above("")?;
+                                custom_spinner.start_above("AI is thinking...")?;
                                 output.start_ai_message()?;
                             }
                             app::AiResponse::AgentStreamText(text) => {
                                 // Always stop spinner first if running
                                 if custom_spinner.is_running() {
                                     custom_spinner.stop();
-                                    // Clear spinner line (above) and input line (current), go to spinner line
+                                    // Just clear the current line (where spinner was), don't move up
                                     execute!(
                                         std::io::stdout(),
-                                        cursor::MoveToColumn(0),
-                                        terminal::Clear(terminal::ClearType::CurrentLine),
-                                        cursor::MoveUp(1),
                                         cursor::MoveToColumn(0),
                                         terminal::Clear(terminal::ClearType::CurrentLine)
                                     )?;
@@ -259,7 +256,7 @@ async fn main() -> Result<()> {
                                 println!(); // Line for spinner
                                 print!("{} ", console::style("▶").cyan());
                                 std::io::stdout().flush()?;
-                                custom_spinner.start_above("")?;
+                                custom_spinner.start_above("Generating response...")?;
                             }
                             app::AiResponse::AgentToolCall {
                                 id: _,
@@ -267,12 +264,9 @@ async fn main() -> Result<()> {
                                 arguments,
                             } => {
                                 custom_spinner.stop();
-                                // Clear spinner/input lines before showing tool
+                                // Clear only the current line (where spinner was)
                                 execute!(
                                     std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine),
-                                    cursor::MoveUp(1),
                                     cursor::MoveToColumn(0),
                                     terminal::Clear(terminal::ClearType::CurrentLine)
                                 )?;
@@ -281,7 +275,7 @@ async fn main() -> Result<()> {
                                 println!(); // Line for spinner
                                 print!("{} ", console::style("▶").cyan());
                                 std::io::stdout().flush()?;
-                                custom_spinner.start_above("")?;
+                                custom_spinner.start_above(&format!("Executing tool: {}", name))?;
                             }
                             app::AiResponse::AgentToolResult {
                                 tool_call_id: _,
@@ -289,12 +283,9 @@ async fn main() -> Result<()> {
                                 result,
                             } => {
                                 custom_spinner.stop();
-                                // Clear spinner and input lines before showing result
+                                // Clear only the current line (where spinner was)
                                 execute!(
                                     std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine),
-                                    cursor::MoveUp(1),
                                     cursor::MoveToColumn(0),
                                     terminal::Clear(terminal::ClearType::CurrentLine)
                                 )?;
@@ -305,25 +296,25 @@ async fn main() -> Result<()> {
                                 println!(); // Line for spinner
                                 print!("{} ", console::style("▶").cyan());
                                 std::io::stdout().flush()?;
-                                custom_spinner.start_above("")?;
+                                custom_spinner.start_above("Processing results...")?;
                             }
                             app::AiResponse::AgentStreamEnd => {
+                                // Stop spinner cleanly (it clears its own line)
                                 custom_spinner.stop();
                                 output.stop_spinner();
 
-                                // Clear the spinner line and input line, then move up to remove blank lines
+                                // Just clear current line
                                 execute!(
                                     std::io::stdout(),
                                     cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine),
-                                    cursor::MoveUp(1),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine),
-                                    cursor::MoveUp(1)
+                                    terminal::Clear(terminal::ClearType::CurrentLine)
                                 )?;
 
+                                // Finish the AI message line
                                 output.end_line()?;
                                 output.print_context_usage(None)?;
+
+                                // Add exactly ONE blank line after AI response
                                 println!();
 
                                 // Transfer any typed input to the input handler
@@ -427,6 +418,9 @@ async fn main() -> Result<()> {
                                         continue 'main_loop;
                                     }
 
+                                    // Move to next line after user's input (which is already visible from input_handler)
+                                    println!();
+
                                     // Send to AI
                                     if cli.verbose {
                                         output.print_system(&format!("DEBUG: About to call app.send_to_ai with input: '{}'", input))?;
@@ -455,8 +449,7 @@ async fn main() -> Result<()> {
                                     // Clear input handler buffer (don't redraw, we'll set up our own layout)
                                     input_handler.set_input("");
 
-                                    // Set up: spinner line, then input prompt
-                                    println!(); // Line for spinner (will be cleared when text arrives)
+                                    // Set up persistent input prompt for typing during AI response
                                     print!("{} ", console::style("▶").cyan());
                                     std::io::stdout().flush()?;
 

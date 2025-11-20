@@ -552,7 +552,7 @@ impl OutputHandler {
             self.code_block_content.clear();
         }
 
-        println!();
+        // Don't add extra newline - let caller control spacing
         Ok(())
     }
 
