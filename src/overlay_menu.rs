@@ -33,8 +33,6 @@ pub struct OverlayMenu {
     main_options: Vec<String>,
     config_options: Vec<String>,
     is_in_config: bool,
-    animation_offset: u16,
-    max_animation_offset: u16,
 }
 
 impl OverlayMenu {
@@ -42,23 +40,21 @@ impl OverlayMenu {
         Self {
             selected_index: 0,
             main_options: vec![
-                "▶ Chat".to_string(),
+                "💬 Continue Chat".to_string(),
                 "⚙️  Settings".to_string(),
-                "📈 Session".to_string(),
-                "🧹 Clear".to_string(),
-                "💡 Help".to_string(),
-                "✕ Exit".to_string(),
+                "📊 Session Info".to_string(),
+                "🧹 Clear Chat".to_string(),
+                "💡 Help & Tips".to_string(),
+                "🚪 Exit ARULA".to_string(),
             ],
             config_options: vec![
-                "Provider".to_string(),
-                "Model".to_string(),
-                "API URL".to_string(),
-                "API Key".to_string(),
-                "← Back".to_string(),
+                "🤖 AI Provider".to_string(),
+                "🧠 AI Model".to_string(),
+                "🌐 API URL".to_string(),
+                "🔑 API Key".to_string(),
+                "← Back to Menu".to_string(),
             ],
             is_in_config: false,
-            animation_offset: 0,
-            max_animation_offset: 10,
         }
     }
 
@@ -77,23 +73,8 @@ impl OverlayMenu {
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(Hide)?;
 
-        // Animation loop - slide down effect
-        self.animation_offset = self.max_animation_offset;
-        while self.animation_offset > 0 {
-            self.render_exit_confirmation("Exit ARULA?")?;
-            self.animation_offset -= 1;
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
-        // Show confirmation dialog
+        // Show confirmation dialog directly (no animation)
         let result = self.show_confirm_dialog("Exit ARULA?")?;
-
-        // Exit animation - slide up effect
-        while self.animation_offset < self.max_animation_offset {
-            self.animation_offset += 1;
-            self.render_exit_confirmation("Exit ARULA?")?;
-            std::thread::sleep(Duration::from_millis(20));
-        }
 
         // Cleanup and restore terminal (with proper cursor restoration)
         self.cleanup_terminal()?;
@@ -109,13 +90,15 @@ impl OverlayMenu {
         let menu_width = 40.min(cols - 4);
         let menu_height = 6u16;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height, "Confirm")?;
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "Confirm")?;
 
-        // Message
+        // Message with styling
         stdout().queue(MoveTo(start_x + 2, start_y + 2))?
-              .queue(Print(message))?;
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+              .queue(Print(message))?
+              .queue(ResetColor)?;
 
         stdout().flush()?;
         Ok(())
@@ -127,30 +110,13 @@ impl OverlayMenu {
 
         // Save terminal state and cursor style
         let (_original_cols, _original_rows) = size()?;
-        // Note: We'll need to save/restore cursor style - but crossterm doesn't have a GetCursorStyle function
-        // We'll restore to a known good state instead
 
         // Enter alternate screen and hide cursor (raw mode is already handled by main app)
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(Hide)?;
 
-        // Animation loop - slide down effect
-        self.animation_offset = self.max_animation_offset;
-        while self.animation_offset > 0 {
-            self.render_frame(app, output)?;
-            self.animation_offset -= 1;
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
-        // Main event loop
+        // Main event loop (no animation)
         let result = self.run_menu_loop(app, output)?;
-
-        // Exit animation - slide up effect
-        while self.animation_offset < self.max_animation_offset {
-            self.animation_offset += 1;
-            self.render_frame(app, output)?;
-            std::thread::sleep(Duration::from_millis(20));
-        }
 
         // Cleanup and restore terminal
         self.cleanup_terminal()?;
@@ -251,12 +217,20 @@ impl OverlayMenu {
                     if self.handle_config_selection(app, output)? {
                         Ok(MenuAction::ExitApp)
                     } else {
-                        Ok(MenuAction::CloseMenu)
+                        Ok(MenuAction::Continue)
                     }
                 } else {
-                    if self.handle_main_selection(app, output)? {
+                    // Check if this is entering the Settings submenu before processing
+                    let was_settings_entry = self.selected_index == 1;
+                    let should_exit = self.handle_main_selection(app, output)?;
+
+                    if should_exit {
                         Ok(MenuAction::ExitApp)
+                    } else if was_settings_entry {
+                        // Entering Settings submenu - continue instead of closing
+                        Ok(MenuAction::Continue)
                     } else {
+                        // Other selections (like Continue Chat) - close menu normally
                         Ok(MenuAction::CloseMenu)
                     }
                 }
@@ -498,9 +472,9 @@ impl OverlayMenu {
         let menu_width = 40.min(cols - 4);
         let menu_height = providers.len() + 4;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height as u16) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height as u16) / 2;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height as u16, "Select AI Provider")?;
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height as u16, "Select AI Provider")?;
 
         for (i, provider) in providers.iter().enumerate() {
             let y = start_y + 2 + i as u16;
@@ -598,25 +572,37 @@ impl OverlayMenu {
         let menu_width = 60.min(cols - 4);
         let menu_height = 6u16;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height, prompt)?;
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, prompt)?;
 
         // Draw input field
         let input_y = start_y + 2;
         let input_text = if input.is_empty() {
-            ColorTheme::dim().apply_to("← Type here...")
+            "← Type here..."
         } else {
-            helpers::tool_result().apply_to(input)
+            input
         };
 
-        stdout().queue(MoveTo(start_x + 2, input_y))?
-              .queue(Print(input_text))?;
+        // Draw input text with appropriate colors
+        if input.is_empty() {
+            stdout().queue(MoveTo(start_x + 2, input_y))?
+                  .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                  .queue(Print(input_text))?
+                  .queue(ResetColor)?;
+        } else {
+            stdout().queue(MoveTo(start_x + 2, input_y))?
+                  .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                  .queue(Print(input_text))?
+                  .queue(ResetColor)?;
+        }
 
-        // Draw cursor
+        // Draw cursor with primary color
         let display_cursor_pos = if input.is_empty() { 0 } else { cursor_pos };
         stdout().queue(MoveTo(start_x + 2 + display_cursor_pos as u16, input_y))?
-              .queue(Print(ColorTheme::primary().apply_to("█")))?;
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI)))?
+              .queue(Print("█"))?
+              .queue(ResetColor)?;
 
         stdout().flush()?;
         Ok(())
@@ -663,28 +649,32 @@ impl OverlayMenu {
         let menu_width = 50.min(cols - 4);
         let menu_height = 10u16;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height, "📊 Session Information")?;
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "📊 Session Information")?;
 
         let config = app.get_config();
         let info_lines = vec![
-            format!("Provider: {}", config.ai.provider),
-            format!("Model: {}", config.ai.model),
-            format!("API URL: {}", config.ai.api_url),
-            format!("Messages: {}", app.messages.len()),
+            format!("🤖 Provider: {}", config.ai.provider),
+            format!("🧠 Model: {}", config.ai.model),
+            format!("🌐 API URL: {}", config.ai.api_url),
+            format!("💬 Messages: {}", app.messages.len()),
         ];
 
         for (i, line) in info_lines.iter().enumerate() {
             let y = start_y + 2 + i as u16;
             stdout().queue(MoveTo(start_x + 2, y))?
-                  .queue(Print(line))?;
+                  .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                  .queue(Print(line))?
+                  .queue(ResetColor)?;
         }
 
-        // Instructions
+        // Instructions with better styling
         let instruction_y = start_y + menu_height - 2;
         stdout().queue(MoveTo(start_x + 2, instruction_y))?
-              .queue(Print("Press Enter to continue...".dim()))?;
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
+              .queue(Print("Press Enter to continue..."))?
+              .queue(ResetColor)?;
 
         stdout().flush()?;
         Ok(())
@@ -731,9 +721,9 @@ impl OverlayMenu {
         let menu_width = 70.min(cols - 4);
         let menu_height = 20u16;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
-        self.draw_box(start_x, start_y, menu_width, menu_height, "❓ ARULA Help")?;
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "❓ ARULA Help")?;
 
         let help_lines = vec![
             "🔧 Commands:",
@@ -760,8 +750,19 @@ impl OverlayMenu {
         for (i, line) in help_lines.iter().enumerate() {
             if i < help_lines.len() {
                 let y = start_y + 2 + i as u16;
+                // Use different colors for different sections
+                let color = if line.starts_with("🔧") || line.starts_with("⌨️") || line.starts_with("💡") {
+                    SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI))
+                } else if line.starts_with("  •") {
+                    SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI))
+                } else {
+                    SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI))
+                };
+
                 stdout().queue(MoveTo(start_x + 2, y))?
-                      .queue(Print(*line))?;
+                      .queue(color)?
+                      .queue(Print(*line))?
+                      .queue(ResetColor)?;
             }
         }
 
@@ -826,7 +827,7 @@ impl OverlayMenu {
         let menu_width = 50.min(cols - 8);
         let menu_height = 8u16;
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
         // Draw modern box for confirmation
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "CONFIRM")?;
@@ -908,7 +909,7 @@ impl OverlayMenu {
         let menu_width = 50.min(cols - 8);
         let menu_height = 12; // Fixed height for better layout
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
         // Draw modern box with gradient effect
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "ARULA")?;
@@ -938,7 +939,9 @@ impl OverlayMenu {
             } else {
                 // Unselected item with subtle styling
                 stdout().queue(MoveTo(start_x + 4, y))?
-                      .queue(Print(helpers::menu_unselected().apply_to(option)))?;
+                      .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                      .queue(Print(option))?
+                      .queue(ResetColor)?;
             }
         }
 
@@ -979,7 +982,7 @@ impl OverlayMenu {
         let menu_width = 60.min(cols - 8);
         let menu_height = 12; // Fixed height for consistency
         let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2 + self.animation_offset;
+        let start_y = (rows - menu_height) / 2;
 
         // Draw modern box
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "SETTINGS")?;
@@ -1009,7 +1012,9 @@ impl OverlayMenu {
             } else {
                 // Unselected item with subtle styling
                 stdout().queue(MoveTo(start_x + 4, y))?
-                      .queue(Print(helpers::menu_unselected().apply_to(option)))?;
+                      .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                      .queue(Print(option))?
+                      .queue(ResetColor)?;
             }
         }
 
@@ -1029,7 +1034,7 @@ impl OverlayMenu {
     }
 
     fn draw_modern_box(&self, x: u16, y: u16, width: u16, height: u16, _title: &str) -> Result<()> {
-        // Modern box with rounded corners - simplified to avoid overflow issues
+        // Modern box with rounded corners using our color theme
         let top_left = "╭";
         let top_right = "╮";
         let bottom_left = "╰";
@@ -1050,30 +1055,23 @@ impl OverlayMenu {
             }
         }
 
-        // Draw simple gradient border (cyan to blue)
-        let height_f = height as f32;
+        // Draw borders using our AI highlight color (steel blue)
+        stdout().queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?;
+
+        // Draw vertical borders
         for i in 0..height {
-            if height_f == 0.0 { break; }
-            let progress = i as f32 / height_f;
-
-            // Use closest terminal color (simplified to Cyan/Blue)
-            let border_color = if progress < 0.5 { Color::Cyan } else { Color::Blue };
-
-            stdout().queue(SetForegroundColor(border_color))?;
             stdout().queue(MoveTo(x, y + i))?.queue(Print(vertical))?;
             stdout().queue(MoveTo(x + width.saturating_sub(1), y + i))?.queue(Print(vertical))?;
         }
 
-        // Top border with gradient
-        stdout().queue(SetForegroundColor(Color::Cyan))?;
+        // Top border
         stdout().queue(MoveTo(x, y))?.queue(Print(top_left))?;
         for _i in 1..width.saturating_sub(1) {
             stdout().queue(Print(horizontal))?;
         }
         stdout().queue(Print(top_right))?;
 
-        // Bottom border with gradient
-        stdout().queue(SetForegroundColor(Color::Blue))?;
+        // Bottom border
         stdout().queue(MoveTo(x, y + height.saturating_sub(1)))?.queue(Print(bottom_left))?;
         for _i in 1..width.saturating_sub(1) {
             stdout().queue(Print(horizontal))?;
@@ -1090,19 +1088,19 @@ impl OverlayMenu {
             return Ok(());
         }
 
-        // Draw selection background with modern style
+        // Draw selection background using our background color
         stdout().queue(MoveTo(x, y))?;
 
-        // Background fill with bounds checking
+        // Background fill with bounds checking using our theme colors
         for _i in 0..width {
-            stdout().queue(SetBackgroundColor(Color::DarkBlue))?;
+            stdout().queue(SetBackgroundColor(crossterm::style::Color::AnsiValue(crate::colors::BACKGROUND_ANSI)))?;
             stdout().queue(Print(" "))?;
         }
 
         // Reset background for text
         stdout().queue(ResetColor)?;
 
-        // Draw text with proper spacing and color - safely format
+        // Draw text with proper spacing and our primary color
         let display_text = format!("▶ {}", text);
         let safe_text = if display_text.len() > width.saturating_sub(4) as usize {
             // Truncate if too long
@@ -1113,7 +1111,10 @@ impl OverlayMenu {
         };
 
         stdout().queue(MoveTo(x + 2, y))?
-              .queue(Print(helpers::menu_selected().apply_to(safe_text)))?;
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI)))?
+              .queue(SetBackgroundColor(crossterm::style::Color::AnsiValue(crate::colors::BACKGROUND_ANSI)))?
+              .queue(Print(safe_text))?
+              .queue(ResetColor)?;
 
         Ok(())
     }
