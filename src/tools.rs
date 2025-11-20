@@ -577,7 +577,50 @@ impl Tool for FileEditTool {
             .description("path", "The path to the file to edit")
             .required("path")
             .param("operation", "object")
-            .description("operation", "The edit operation to perform")
+            .description("operation", r#"The edit operation to perform. Must include a 'type' field.
+
+Available operation types and their fields:
+
+1. **append** - Add content to end of file
+   - type: "append"
+   - content: string (required) - The content to append
+
+2. **prepend** - Add content to beginning of file
+   - type: "prepend"
+   - content: string (required) - The content to prepend
+
+3. **replace** - Replace text using find/replace OR replace line range
+   - type: "replace"
+   - Option A (text replacement):
+     * old_text: string (required) - Text to find and replace
+     * new_text: string (required) - Replacement text
+     * Aliases: 'old' and 'new' also work
+   - Option B (line range replacement):
+     * start_line: integer (required) - Starting line number (1-indexed)
+     * end_line: integer (required) - Ending line number (inclusive)
+     * content: string (required) - New content for the range
+
+4. **insert** - Insert content at specific line
+   - type: "insert"
+   - line: integer (required) - Line number to insert at (1-indexed)
+   - content: string (required) - Content to insert
+   - Alias: 'line_number' also works
+
+5. **delete** - Delete line range
+   - type: "delete"
+   - start_line: integer (required) - Starting line number (1-indexed)
+   - end_line: integer (required) - Ending line number (inclusive)
+
+6. **create** - Create new file with content
+   - type: "create"
+   - content: string (required) - File content
+
+Examples:
+- {"type": "append", "content": "New line\n"}
+- {"type": "replace", "old_text": "foo", "new_text": "bar"}
+- {"type": "replace", "start_line": 5, "end_line": 10, "content": "new content"}
+- {"type": "insert", "line": 15, "content": "inserted line"}
+- {"type": "delete", "start_line": 20, "end_line": 25}"#)
             .required("operation")
             .build()
     }
