@@ -695,3 +695,131 @@ The user will manually rebuild after exiting the application.
         result.trim().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use serde_json::json;
+
+    fn create_test_app() -> App {
+        App {
+            config: Config::default(),
+            agent_client: None,
+            messages: Vec::new(),
+            ai_response_rx: None,
+            current_streaming_message: None,
+            pending_bash_commands: None,
+            pending_tool_results: None,
+            pending_tool_calls: None,
+            debug: false,
+            cancellation_token: CancellationToken::new(),
+            current_task_handle: None,
+        }
+    }
+
+    #[test]
+    fn test_app_creation() {
+        let app = create_test_app();
+        assert!(app.messages.is_empty());
+        assert!(app.current_streaming_message.is_none());
+        assert!(app.pending_bash_commands.is_none());
+        assert!(app.pending_tool_results.is_none());
+        assert!(app.pending_tool_calls.is_none());
+        assert!(!app.debug);
+    }
+
+    #[test]
+    fn test_debug_print() {
+        // Should not panic with debug flag unset
+        debug_print("test message");
+
+        // Set debug flag
+        std::env::set_var("ARULA_DEBUG", "1");
+        debug_print("debug message");
+
+        // Clean up
+        std::env::remove_var("ARULA_DEBUG");
+    }
+
+    #[test]
+    fn test_ai_response_variants() {
+        // Test all AiResponse variants can be created
+        let stream_start = AiResponse::AgentStreamStart;
+        let stream_text = AiResponse::AgentStreamText("Hello".to_string());
+        let tool_call = AiResponse::AgentToolCall {
+            id: "call_1".to_string(),
+            name: "bash_tool".to_string(),
+            arguments: "{\"command\": \"echo hello\"}".to_string(),
+        };
+        let tool_result = AiResponse::AgentToolResult {
+            tool_call_id: "call_1".to_string(),
+            success: true,
+            result: json!("hello"),
+        };
+        let stream_end = AiResponse::AgentStreamEnd;
+
+        // Verify they can be debug formatted
+        assert!(format!("{:?}", stream_start).contains("AgentStreamStart"));
+        assert!(format!("{:?}", stream_text).contains("Hello"));
+        assert!(format!("{:?}", tool_call).contains("bash_tool"));
+        assert!(format!("{:?}", tool_result).contains("call_1"));
+        assert!(format!("{:?}", stream_end).contains("AgentStreamEnd"));
+    }
+
+    #[test]
+    fn test_config_integration() {
+        let mut config = Config::default();
+        config.ai.model = "test-model".to_string();
+
+        let app = App {
+            config,
+            agent_client: None,
+            messages: Vec::new(),
+            ai_response_rx: None,
+            current_streaming_message: None,
+            pending_bash_commands: None,
+            pending_tool_results: None,
+            pending_tool_calls: None,
+            debug: true,
+            cancellation_token: CancellationToken::new(),
+            current_task_handle: None,
+        };
+
+        assert_eq!(app.config.ai.model, "test-model");
+        assert!(app.debug);
+    }
+
+    #[test]
+    fn test_cancellation_token() {
+        let app = create_test_app();
+
+        // Token should not be cancelled initially
+        assert!(!app.cancellation_token.is_cancelled());
+
+        // Cancel the token
+        app.cancellation_token.cancel();
+        assert!(app.cancellation_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_channel_cleanup() {
+        let app = create_test_app();
+
+        // Create a channel and assign it to the app
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Simulate dropping the sender
+        drop(tx);
+
+        // The receiver should still work but return None when trying to receive
+        let mut app_with_rx = app;
+        app_with_rx.ai_response_rx = Some(rx);
+
+        // Try to receive from the closed channel
+        if let Some(mut rx) = app_with_rx.ai_response_rx.take() {
+            let result = rx.try_recv();
+            assert!(result.is_err());
+        }
+    }
+}

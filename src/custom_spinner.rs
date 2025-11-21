@@ -337,9 +337,9 @@ mod tests {
     #[test]
     fn test_index_wrapping() {
         let len = STAR_FRAMES.len() as i32;
-        assert_eq!((0 + 1).rem_euclid(len), 1);
-        assert_eq!((11 + 1).rem_euclid(len), 0);
-        assert_eq!((0 - 1).rem_euclid(len), 11);
+        assert_eq!((0i32 + 1i32).rem_euclid(len), 1);
+        assert_eq!((11i32 + 1i32).rem_euclid(len), 0);
+        assert_eq!((0i32 - 1i32).rem_euclid(len), 11);
     }
 
     #[test]

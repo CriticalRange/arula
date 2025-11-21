@@ -6,7 +6,7 @@ pub mod agent;
 pub mod agent_client;
 pub mod api;
 pub mod app;
-// Temporarily disabled due to compilation issues
+// Temporarily disabled - depends on testing module
 // pub mod app_testable;
 pub mod chat;
 pub mod colors;
@@ -22,7 +22,7 @@ pub mod tools;
 pub mod visioneer;
 
 // Testing infrastructure (only available during testing)
-// Temporarily disabled due to compilation issues
+// Temporarily disabled - complex trait issues
 // #[cfg(test)]
 // pub mod testing;
 

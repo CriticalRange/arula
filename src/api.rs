@@ -59,7 +59,7 @@ pub enum StreamingResponse {
     Error(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AIProvider {
     OpenAI,
     Claude,
@@ -1309,5 +1309,323 @@ impl ApiClient {
             || error_str.contains("http error")
             || error_str.contains("hyper error")
             || error_str.contains("reqwest error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_client() -> ApiClient {
+        ApiClient::new(
+            "openai".to_string(),
+            "http://localhost:8080".to_string(),
+            "test-key".to_string(),
+            "test-model".to_string(),
+        )
+    }
+
+    fn create_test_chat_message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: Some(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    fn create_test_tool_call() -> ToolCall {
+        ToolCall {
+            id: "call_1".to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "bash_tool".to_string(),
+                arguments: "{\"command\": \"echo hello\"}".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_debug_print() {
+        // Should not panic with debug flag unset
+        debug_print("test message");
+
+        // Set debug flag
+        std::env::set_var("ARULA_DEBUG", "1");
+        debug_print("debug message");
+
+        // Clean up
+        std::env::remove_var("ARULA_DEBUG");
+    }
+
+    #[test]
+    fn test_chat_message_serialization() {
+        let message = create_test_chat_message("user", "Hello, world!");
+
+        // Test serialization
+        let json_str = serde_json::to_string(&message).unwrap();
+        assert!(json_str.contains("user"));
+        assert!(json_str.contains("Hello, world!"));
+
+        // Test deserialization
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.role, "user");
+        assert_eq!(deserialized.content, Some("Hello, world!".to_string()));
+        assert!(deserialized.tool_calls.is_none());
+        assert!(deserialized.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_with_tool_calls() {
+        let tool_call = create_test_tool_call();
+        let message = ChatMessage {
+            role: "assistant".to_string(),
+            content: Some("I'll run a command".to_string()),
+            tool_calls: Some(vec![tool_call.clone()]),
+            tool_call_id: None,
+        };
+
+        // Test serialization
+        let json_str = serde_json::to_string(&message).unwrap();
+        assert!(json_str.contains("assistant"));
+        assert!(json_str.contains("bash_tool"));
+        assert!(json_str.contains("echo hello"));
+
+        // Test deserialization
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.role, "assistant");
+        let tool_calls = deserialized.tool_calls.unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_1");
+        assert_eq!(tool_calls[0].function.name, "bash_tool");
+    }
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let tool_call = create_test_tool_call();
+
+        let json_str = serde_json::to_string(&tool_call).unwrap();
+        assert!(json_str.contains("call_1"));
+        assert!(json_str.contains("function"));
+        assert!(json_str.contains("bash_tool"));
+
+        let deserialized: ToolCall = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.id, "call_1");
+        assert_eq!(deserialized.r#type, "function");
+        assert_eq!(deserialized.function.name, "bash_tool");
+        assert_eq!(deserialized.function.arguments, "{\"command\": \"echo hello\"}");
+    }
+
+    #[test]
+    fn test_usage_serialization() {
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            total_tokens: 30,
+        };
+
+        let json_str = serde_json::to_string(&usage).unwrap();
+        assert!(json_str.contains("10"));
+        assert!(json_str.contains("20"));
+        assert!(json_str.contains("30"));
+
+        let deserialized: Usage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.prompt_tokens, 10);
+        assert_eq!(deserialized.completion_tokens, 20);
+        assert_eq!(deserialized.total_tokens, 30);
+    }
+
+    #[test]
+    fn test_api_response_serialization() {
+        let usage = Usage {
+            prompt_tokens: 15,
+            completion_tokens: 25,
+            total_tokens: 40,
+        };
+
+        let response = ApiResponse {
+            response: "Hello, world!".to_string(),
+            success: true,
+            error: None,
+            usage: Some(usage.clone()),
+            tool_calls: None,
+        };
+
+        let json_str = serde_json::to_string(&response).unwrap();
+        assert!(json_str.contains("Hello, world!"));
+        assert!(json_str.contains("true"));
+
+        let deserialized: ApiResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.response, "Hello, world!");
+        assert!(deserialized.success);
+        assert!(deserialized.error.is_none());
+        let deserialized_usage = deserialized.usage.unwrap();
+        assert_eq!(deserialized_usage.total_tokens, 40);
+    }
+
+    #[test]
+    fn test_api_response_with_error() {
+        let response = ApiResponse {
+            response: "Error occurred".to_string(),
+            success: false,
+            error: Some("Network error".to_string()),
+            usage: None,
+            tool_calls: None,
+        };
+
+        let json_str = serde_json::to_string(&response).unwrap();
+        let deserialized: ApiResponse = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(deserialized.response, "Error occurred");
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.error, Some("Network error".to_string()));
+        assert!(deserialized.usage.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_with_tool_call_id() {
+        let message = ChatMessage {
+            role: "tool".to_string(),
+            content: Some("Command executed successfully".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+        };
+
+        let json_str = serde_json::to_string(&message).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(deserialized.role, "tool");
+        assert_eq!(deserialized.tool_call_id, Some("call_1".to_string()));
+        assert!(deserialized.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_streaming_response_variants() {
+        // Test that we can create StreamingResponse variants
+        let chunk = StreamingResponse::Chunk("Hello".to_string());
+        let start = StreamingResponse::Start;
+
+        // Test debug formatting
+        assert!(format!("{:?}", chunk).contains("Chunk"));
+        assert!(format!("{:?}", start).contains("Start"));
+
+        // End variant needs an ApiResponse, so just test creation
+        let api_response = ApiResponse {
+            response: "Done".to_string(),
+            success: true,
+            error: None,
+            usage: None,
+            tool_calls: None,
+        };
+        let _end = StreamingResponse::End(api_response);
+    }
+
+    #[test]
+    fn test_api_client_creation() {
+        let client = create_test_client();
+        assert_eq!(client.model, "test-model");
+        assert_eq!(client.provider, AIProvider::OpenAI);
+    }
+
+    #[test]
+    fn test_ai_provider_enum() {
+        // Test all AIProvider variants can be created and compared
+        let openai = AIProvider::OpenAI;
+        let claude = AIProvider::Claude;
+        let _ollama = AIProvider::Ollama;
+        let _zai = AIProvider::ZAiCoding;
+        let _custom = AIProvider::Custom;
+
+        assert_eq!(openai, AIProvider::OpenAI);
+        assert_ne!(openai, claude);
+
+        // Test debug formatting
+        let debug_str = format!("{:?}", openai);
+        assert!(debug_str.contains("OpenAI"));
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Test empty chat message
+        let empty_message = ChatMessage {
+            role: "".to_string(),
+            content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        let json_str = serde_json::to_string(&empty_message).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.role.is_empty());
+        assert!(deserialized.content.is_none());
+
+        // Test message with only tool calls
+        let tool_only_message = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![create_test_tool_call()]),
+            tool_call_id: None,
+        };
+
+        let json_str = serde_json::to_string(&tool_only_message).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.content.is_none());
+        assert!(deserialized.tool_calls.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_async_operations() {
+        let client = create_test_client();
+        // Test that async operations work (placeholder test)
+        assert_eq!(client.model, "test-model");
+    }
+
+    #[test]
+    fn test_struct_debug_formats() {
+        let message = create_test_chat_message("user", "Hello");
+        let debug_str = format!("{:?}", message);
+        assert!(debug_str.contains("ChatMessage"));
+        assert!(debug_str.contains("user"));
+
+        let tool_call = create_test_tool_call();
+        let debug_str = format!("{:?}", tool_call);
+        assert!(debug_str.contains("ToolCall"));
+        assert!(debug_str.contains("call_1"));
+
+        let usage = Usage {
+            prompt_tokens: 5,
+            completion_tokens: 10,
+            total_tokens: 15,
+        };
+        let debug_str = format!("{:?}", usage);
+        assert!(debug_str.contains("Usage"));
+        assert!(debug_str.contains("15"));
+    }
+
+    #[test]
+    fn test_json_parsing_edge_cases() {
+        // Test with special characters in content
+        let special_message = ChatMessage {
+            role: "user".to_string(),
+            content: Some("Special chars: \"quotes\" and \n newlines \t tabs".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        let json_str = serde_json::to_string(&special_message).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.content.unwrap().contains("quotes"));
+
+        // Test with Unicode characters
+        let unicode_message = ChatMessage {
+            role: "user".to_string(),
+            content: Some("Unicode: 🚀🎉中文字符".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        let json_str = serde_json::to_string(&unicode_message).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.content.unwrap().contains("🚀"));
     }
 }

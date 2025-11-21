@@ -253,14 +253,13 @@ mod tests {
     fn test_color_ext_trait() {
         use console::Style;
 
-        // Test that the extension trait methods work
-        let style = Style::new();
-        let _primary_style = style.primary();
-        let _secondary_style = style.secondary();
-        let _background_style = style.background();
-        let _ai_highlight_style = style.ai_highlight();
-        let _misc_style = style.misc();
-        let _inline_code_style = style.inline_code_style();
+        // Test that the extension trait methods work (each consumes the style)
+        let _primary_style = Style::new().primary();
+        let _secondary_style = Style::new().secondary();
+        let _background_style = Style::new().background();
+        let _ai_highlight_style = Style::new().ai_highlight();
+        let _misc_style = Style::new().misc();
+        let _inline_code_style = Style::new().inline_code_style();
     }
 
     #[test]

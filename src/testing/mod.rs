@@ -32,7 +32,7 @@ pub trait ConfigManager: Send + Sync {
 #[async_trait]
 pub trait AiClient: Send + Sync {
     async fn send_message(&self, message: &str, history: &[EnhancedChatMessage]) -> Result<String, anyhow::Error>;
-    async fn send_message_stream(&self, message: &str, history: &[EnhancedChatMessage]) -> Result<Box<dyn tokio::stream::Item = Result<String, anyhow::Error>> + Send + Unpin, anyhow::Error>;
+    async fn send_message_stream(&self, message: &str, history: &[EnhancedChatMessage]) -> Result<Box<dyn futures::Stream<Item = Result<String, anyhow::Error>> + Send + Unpin>, anyhow::Error>;
 }
 
 /// Trait for file system operations
@@ -56,7 +56,7 @@ pub trait ProcessExecutor: Send + Sync {
 #[async_trait]
 pub trait HttpClient: Send + Sync {
     async fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value, anyhow::Error>;
-    async fn post_json_stream(&self, url: &str, body: &serde_json::Value) -> Result<Box<dyn tokio::stream::Item = Result<String, anyhow::Error>> + Send + Unpin, anyhow::Error>;
+    async fn post_json_stream(&self, url: &str, body: &serde_json::Value) -> Result<Box<dyn futures::Stream<Item = Result<String, anyhow::Error>> + Send + Unpin>, anyhow::Error>;
     async fn get(&self, url: &str) -> Result<serde_json::Value, anyhow::Error>;
 }
 
