@@ -16,6 +16,90 @@ pub struct AiConfig {
     pub api_key: String,
 }
 
+impl AiConfig {
+    /// Get the default configuration for a specific provider
+    pub fn get_provider_defaults(provider: &str) -> AiConfig {
+        match provider.to_lowercase().as_str() {
+            "z.ai coding plan" | "z.ai" | "zai" => AiConfig {
+                provider: "z.ai coding plan".to_string(),
+                model: "glm-4.6".to_string(),
+                api_url: "https://api.z.ai/api/coding/paas/v4".to_string(),
+                api_key: std::env::var("ZAI_API_KEY").unwrap_or_default(),
+            },
+            "openai" => AiConfig {
+                provider: "openai".to_string(),
+                model: "gpt-3.5-turbo".to_string(),
+                api_url: "https://api.openai.com/v1".to_string(),
+                api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            },
+            "anthropic" => AiConfig {
+                provider: "anthropic".to_string(),
+                model: "claude-3-sonnet-20240229".to_string(),
+                api_url: "https://api.anthropic.com".to_string(),
+                api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            },
+            "ollama" => AiConfig {
+                provider: "ollama".to_string(),
+                model: "llama2".to_string(),
+                api_url: "http://localhost:11434".to_string(),
+                api_key: std::env::var("OLLAMA_API_KEY").unwrap_or_default(),
+            },
+            "openrouter" => AiConfig {
+                provider: "openrouter".to_string(),
+                model: "openai/gpt-4o".to_string(), // Popular default model
+                api_url: "https://openrouter.ai/api/v1".to_string(),
+                api_key: std::env::var("OPENROUTER_API_KEY").unwrap_or_default(),
+            },
+            _ => AiConfig {
+                provider: "custom".to_string(),
+                model: "default".to_string(),
+                api_url: "http://localhost:8080".to_string(),
+                api_key: std::env::var("CUSTOM_API_KEY").unwrap_or_default(),
+            },
+        }
+    }
+
+    /// Apply provider defaults while preserving user customizations where appropriate
+    pub fn apply_provider_defaults(&mut self, preserve_api_key: bool) {
+        let defaults = Self::get_provider_defaults(&self.provider);
+
+        // Always update provider
+        self.provider = defaults.provider;
+
+        // Update model if it was the default from previous provider or empty
+        if self.model.is_empty() || self.model == "default" {
+            self.model = defaults.model;
+        }
+
+        // Always update API URL (not user-editable for predefined providers)
+        self.api_url = defaults.api_url;
+
+        // Preserve API key if requested and it exists
+        if !preserve_api_key || self.api_key.is_empty() {
+            self.api_key = defaults.api_key;
+        }
+    }
+
+    /// Check if a field is editable for the current provider
+    pub fn is_field_editable(&self, field: ProviderField) -> bool {
+        match self.provider.to_lowercase().as_str() {
+            "custom" => true, // All fields editable for custom
+            _ => match field {
+                ProviderField::Model => true,  // Model always editable
+                ProviderField::ApiKey => true, // API key always editable
+                ProviderField::ApiUrl => false, // URL not editable for predefined providers
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderField {
+    Model,
+    ApiUrl,
+    ApiKey,
+}
+
 impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
@@ -61,12 +145,13 @@ impl Config {
 
     pub fn default() -> Self {
         Self {
-            ai: AiConfig {
-                provider: "openai".to_string(),
-                model: "gpt-3.5-turbo".to_string(),
-                api_url: "https://api.openai.com/v1".to_string(),
-                api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            },
+            ai: AiConfig::get_provider_defaults("openai"),
+        }
+    }
+
+    pub fn zai_default() -> Self {
+        Self {
+            ai: AiConfig::get_provider_defaults("z.ai coding plan"),
         }
     }
 

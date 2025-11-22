@@ -105,6 +105,36 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Set up panic hook to clean terminal and show panic messages properly
+fn setup_panic_hook() {
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Clean up terminal state first
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            cursor::Show,
+            crossterm::style::ResetColor,
+            terminal::Clear(terminal::ClearType::CurrentLine)
+        );
+        let _ = println!(); // Ensure we're on a clean line
+
+        // Print panic information
+        eprintln!("\n🚨 ARULA CLI PANIC:");
+        eprintln!("Location: {}", panic_info.location().unwrap());
+
+        if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Message: {}", message);
+        } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("Message: {}", message);
+        } else {
+            eprintln!("Message: <unknown>");
+        }
+
+        eprintln!("\nPlease report this issue with the above information.");
+        eprintln!("Terminal state has been restored.\n");
+    }));
+}
+
 /// Format tool result into human-readable text instead of raw JSON
 fn format_tool_result(result: &Value) -> String {
     // Check if result has an "Ok" wrapper (common pattern)
@@ -200,6 +230,9 @@ fn format_tool_result(result: &Value) -> String {
 async fn main() -> Result<()> {
     // Install color-eyre for better error reporting
     let _ = color_eyre::install();
+
+    // Set up panic hook to clean terminal and show errors
+    setup_panic_hook();
 
     // Show cursor initially
     let _ = console::Term::stdout().show_cursor();
@@ -592,7 +625,20 @@ async fn main() -> Result<()> {
 
 fn setup_bar_cursor() -> Result<()> {
     // Set cursor to blinking block cursor for better visibility
-    std::io::stdout().execute(SetCursorStyle::BlinkingBlock)?;
+    // Some terminals don't support cursor style changes, so we handle it gracefully
+    match std::io::stdout().execute(SetCursorStyle::BlinkingBlock) {
+        Ok(_) => {
+            if std::env::var("ARULA_DEBUG").is_ok() {
+                println!("🔧 DEBUG: ✅ Cursor style set to blinking block");
+            }
+        }
+        Err(e) => {
+            if std::env::var("ARULA_DEBUG").is_ok() {
+                println!("🔧 DEBUG: ⚠️ Could not set cursor style (this is normal): {}", e);
+            }
+            // Don't fail the whole application for cursor style issues
+        }
+    }
     Ok(())
 }
 

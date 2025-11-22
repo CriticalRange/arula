@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::colors::{ColorTheme, helpers};
+use crate::config::ProviderField;
 use crate::output::OutputHandler;
 use anyhow::Result;
 use std::io::{stdout, Write};
@@ -36,6 +37,15 @@ pub struct OverlayMenu {
 }
 
 impl OverlayMenu {
+    /// Truncate text to fit within max_width, adding "..." if truncated
+    fn truncate_text(text: &str, max_width: usize) -> String {
+        if text.len() <= max_width {
+            text.to_string()
+        } else {
+            format!("{}...", &text[..max_width.saturating_sub(3)])
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             selected_index: 0,
@@ -87,10 +97,10 @@ impl OverlayMenu {
 
         stdout().queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
 
-        let menu_width = 40.min(cols - 4);
+        let menu_width = 40.min(cols.saturating_sub(4));
         let menu_height = 6u16;
-        let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2;
+        let start_x = if cols > menu_width { cols.saturating_sub(menu_width) / 2 } else { 0 };
+        let start_y = if rows > menu_height { rows.saturating_sub(menu_height) / 2 } else { 0 };
 
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "Confirm")?;
 
@@ -317,10 +327,7 @@ impl OverlayMenu {
                 Ok(false)
             }
             1 => { // Model
-                if let Some(model) = self.show_text_input("Enter model name", &app.get_config().ai.model)? {
-                    app.set_model(&model);
-                    output.print_system(&format!("✅ Model set to: {}", model))?;
-                }
+                self.show_model_selector(app, output)?;
                 // Clear any pending events that might have been generated during the dialog
                 while event::poll(Duration::from_millis(0))? {
                     let _ = event::read()?;
@@ -328,17 +335,25 @@ impl OverlayMenu {
                 Ok(false)
             }
             2 => { // API URL
-                if let Some(url) = self.show_text_input("Enter API URL", &app.get_config().ai.api_url)? {
-                    app.config.ai.api_url = url.clone();
-                    let _ = app.config.save();
-                    match app.initialize_agent_client() {
-                        Ok(()) => {
-                            output.print_system(&format!("✅ API URL set to: {} (AI client initialized)", url))?;
-                        }
-                        Err(_) => {
-                            output.print_system(&format!("✅ API URL set to: {} (AI client will initialize when configuration is complete)", url))?;
+                if app.config.ai.is_field_editable(ProviderField::ApiUrl) {
+                    if let Some(url) = self.show_text_input("Enter API URL", &app.get_config().ai.api_url)? {
+                        app.config.ai.api_url = url.clone();
+                        let _ = app.config.save();
+                        match app.initialize_agent_client() {
+                            Ok(()) => {
+                                output.print_system(&format!("✅ API URL set to: {} (AI client initialized)", url))?;
+                            }
+                            Err(_) => {
+                                output.print_system(&format!("✅ API URL set to: {} (AI client will initialize when configuration is complete)", url))?;
+                            }
                         }
                     }
+                } else {
+                    output.print_system(&format!(
+                        "🚫 API URL is not editable for {}. Current: {}",
+                        app.config.ai.provider,
+                        app.config.ai.api_url
+                    ))?;
                 }
                 // Clear any pending events that might have been generated during the dialog
                 while event::poll(Duration::from_millis(0))? {
@@ -384,7 +399,7 @@ impl OverlayMenu {
     }
 
     fn show_provider_selector(&mut self, app: &mut App, output: &mut OutputHandler) -> Result<()> {
-        let providers = vec!["openai", "claude", "anthropic", "ollama", "custom"];
+        let providers = vec!["openai", "anthropic", "ollama", "z.ai coding plan", "openrouter", "custom"];
         let current_config = app.get_config();
         let current_idx = providers
             .iter()
@@ -426,7 +441,27 @@ impl OverlayMenu {
                                 }
                             }
                             KeyCode::Enter => {
-                                app.config.ai.provider = providers[selected_idx].to_string();
+                                let new_provider = providers[selected_idx].to_string();
+                                let old_api_key = app.config.ai.api_key.clone();
+
+                                // Update provider and apply provider defaults
+                                app.config.ai.provider = new_provider.clone();
+                                app.config.ai.apply_provider_defaults(true); // Preserve existing API key
+
+                                // Show what changed
+                                if old_api_key != app.config.ai.api_key && !old_api_key.is_empty() {
+                                    output.print_system("🔑 API key preserved from previous provider")?;
+                                }
+
+                                output.print_system(&format!(
+                                    "🔄 Model automatically set to: {}",
+                                    app.config.ai.model
+                                ))?;
+                                output.print_system(&format!(
+                                    "🌐 API URL automatically set to: {}",
+                                    app.config.ai.api_url
+                                ))?;
+
                                 let _ = app.config.save();
                                 match app.initialize_agent_client() {
                                     Ok(()) => {
@@ -469,10 +504,20 @@ impl OverlayMenu {
 
         stdout().queue(terminal::Clear(terminal::ClearType::All))?;
 
-        let menu_width = 40.min(cols - 4);
+        let menu_width = 40.min(cols.saturating_sub(4));
         let menu_height = providers.len() + 4;
-        let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height as u16) / 2;
+        let menu_height_u16 = menu_height as u16;
+
+        // Ensure menu fits in terminal
+        let menu_width = menu_width.min(cols.saturating_sub(4));
+        let menu_height = if menu_height_u16 > rows.saturating_sub(4) {
+            rows.saturating_sub(4) as usize
+        } else {
+            menu_height
+        };
+
+        let start_x = if cols > menu_width { cols.saturating_sub(menu_width) / 2 } else { 0 };
+        let start_y = if rows > menu_height as u16 { rows.saturating_sub(menu_height as u16) / 2 } else { 0 };
 
         self.draw_modern_box(start_x, start_y, menu_width, menu_height as u16, "Select AI Provider")?;
 
@@ -491,6 +536,438 @@ impl OverlayMenu {
                   .queue(Print(text))?
                   .queue(ResetColor)?;
         }
+
+        stdout().flush()?;
+        Ok(())
+    }
+
+    fn get_default_model_for_provider(&self, provider: &str) -> String {
+        match provider.to_lowercase().as_str() {
+            "z.ai coding plan" | "z.ai" | "zai" => "glm-4.6".to_string(),
+            "openai" => "gpt-3.5-turbo".to_string(),
+            "claude" | "anthropic" => "claude-3-sonnet-20240229".to_string(),
+            "ollama" => "llama2".to_string(),
+            "openrouter" => "openai/gpt-4o".to_string(),
+            _ => "default".to_string(),
+        }
+    }
+
+    /// Helper function to write debug logs to file
+    fn debug_log(&self, message: &str) {
+        let _ = std::fs::write("./arula_debug.log", format!("[{}] {}\n", chrono::Utc::now().format("%H:%M:%S.%3f"), message));
+    }
+
+    /// Helper function to append debug logs to file
+    fn debug_log_append(&self, message: &str) {
+        use std::io::Write;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("./arula_debug.log")
+            .and_then(|mut file| {
+                write!(file, "[{}] {}\n", chrono::Utc::now().format("%H:%M:%S.%3f"), message)
+            });
+    }
+
+    /// Get OpenRouter models with dynamic fetching and caching
+    fn get_openrouter_models(&self, app: &mut App, output: &mut OutputHandler) -> (Vec<String>, bool) {
+        self.debug_log("get_openrouter_models called");
+
+        // First, try to get cached models
+        match app.get_cached_openrouter_models() {
+            Some(cached_models) => {
+                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
+                if !cached_models.is_empty() {
+                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
+                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
+                    return (cached_models, false); // (models, is_loading)
+                } else {
+                    self.debug_log_append("Cache is empty, will start fetching");
+                }
+            }
+            None => {
+                self.debug_log_append("No cache found, will start fetching");
+            }
+        }
+
+        // Start background fetching if no cached models available
+        self.debug_log_append("Starting background fetch");
+        let _ = output.print_system("🔄 Fetching models...");
+        app.fetch_openrouter_models();
+
+        // Return loading state - keep menu open while fetching
+        self.debug_log_append("Returning loading state with 1 model");
+        (vec!["Fetching models...".to_string()], true) // (models, is_loading)
+    }
+
+    fn show_model_selector(&mut self, app: &mut App, output: &mut OutputHandler) -> Result<()> {
+        let current_config = app.get_config();
+        let provider = current_config.ai.provider.clone();
+        let current_model = current_config.ai.model.clone();
+
+        // For custom provider, use text input instead of selector
+        if provider.to_lowercase() == "custom" {
+            if let Some(model) = self.show_text_input("Enter model name", &current_model)? {
+                app.set_model(&model);
+                output.print_system(&format!("✅ Model set to: {}", model))?;
+            }
+            return Ok(());
+        }
+
+        // For predefined providers, use selector
+        let models: Vec<String> = match provider.to_lowercase().as_str() {
+            "z.ai coding plan" | "z.ai" | "zai" => {
+                vec!["glm-4.6".to_string(), "glm-4.5".to_string(), "glm-4.5-air".to_string()]
+            }
+            "openai" => {
+                vec!["gpt-4".to_string(), "gpt-4-turbo".to_string(), "gpt-3.5-turbo".to_string()]
+            }
+            "anthropic" => {
+                vec!["claude-3-opus-20240229".to_string(), "claude-3-sonnet-20240229".to_string(), "claude-3-haiku-20240307".to_string()]
+            }
+            "ollama" => {
+                vec!["llama2".to_string(), "codellama".to_string(), "mistral".to_string(), "vicuna".to_string()]
+            }
+            "openrouter" => {
+                // For OpenRouter, fetch models dynamically with caching
+                self.debug_log_append("OpenRouter provider selected, calling get_openrouter_models");
+
+                // Force cache clear to simulate first-run behavior every time
+                self.debug_log_append("Clearing cache to simulate first-run behavior");
+                app.cache_openrouter_models(Vec::new());
+
+                let (models, is_loading) = self.get_openrouter_models(app, output);
+                self.debug_log_append(&format!("get_openrouter_models returned {} models, is_loading={}", models.len(), is_loading));
+
+                // Always pass to loading loop, even if models might load quickly
+                if is_loading {
+                    self.debug_log_append(&format!("Starting loading state with {} models", models.len()));
+                    models
+                } else {
+                    // Models loaded very quickly, but we still want to show transition
+                    self.debug_log_append(&format!("Models loaded quickly with {} models, showing loading transition", models.len()));
+                    vec!["⚡ Loading models...".to_string()]
+                }
+            }
+            _ => {
+                // Fallback to text input for unknown providers
+                if let Some(model) = self.show_text_input("Enter model name", &current_config.ai.model)? {
+                    app.set_model(&model);
+                    output.print_system(&format!("✅ Model set to: {}", model))?;
+                }
+                return Ok(());
+            }
+        };
+
+        // Handle empty models list
+        if models.is_empty() {
+            output.print_system("⚠️ No OpenRouter models available. Try selecting OpenRouter provider again to fetch models.")?;
+            return Ok(());
+        }
+
+        let current_idx = models
+            .iter()
+            .position(|m| m == &current_model)
+            .unwrap_or(0);
+
+        // Clear any pending events in the buffer
+        std::thread::sleep(Duration::from_millis(20));
+        for _ in 0..3 {
+            while event::poll(Duration::from_millis(0))? {
+                let _ = event::read()?;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Create a temporary selection for model with search support
+        let mut selected_idx = current_idx;
+        let mut search_query = String::new();
+        let mut all_models = models.clone();
+        let mut loading_spinner = all_models.len() == 1 && (all_models[0].contains("Loading") || all_models[0].contains("⚡") || all_models[0].contains("Fetching"));
+        let mut spinner_counter = 0;
+
+  
+        loop {
+            // Always check cache until we have real models (not just "Fetching models...")
+            let should_check_cache = loading_spinner ||
+                (all_models.len() == 1 && (all_models[0].contains("Loading") || all_models[0].contains("⚡") || all_models[0].contains("Fetching"))) ||
+                spinner_counter < 50; // Keep checking longer for real models to arrive
+
+            if should_check_cache {
+                spinner_counter += 1;
+
+                // Re-evaluate loading spinner state in case models changed
+                let was_loading = loading_spinner;
+                loading_spinner = all_models.len() == 1 && (all_models[0].contains("Loading") || all_models[0].contains("⚡") || all_models[0].contains("Fetching"));
+                if was_loading != loading_spinner {
+                    // State changed, but we don't need to log it
+                }
+
+                // Shorter timeout after 10 seconds (100 iterations of 100ms)
+                if spinner_counter > 100 {
+                    all_models = vec!["⚠️ Loading taking too long - Press ESC or try a different provider".to_string()];
+                    loading_spinner = false;
+                    let _ = output.print_system("⚠️ Model loading timed out - try using a different provider");
+                } else {
+                    // Check cache every iteration for immediate response
+                    match app.get_cached_openrouter_models() {
+                        Some(cached_models) => {
+                            if cached_models.is_empty() {
+                                // Still empty, continue loading
+                            } else if cached_models.len() == 1 && (cached_models[0].contains("Loading") || cached_models[0].contains("timeout") || cached_models[0].contains("Fetching") || cached_models[0].contains("⚡")) {
+                                // Still in loading state
+                            } else {
+                                // Real models loaded! Update immediately
+                                all_models = cached_models;
+                                loading_spinner = false;
+                            }
+                        }
+                        None => {
+                            // Cache is None, models not loaded yet
+                        }
+                    }
+
+                    // Update loading text with spinning animation
+                    if loading_spinner {
+                        let spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        let spinner = spinner_chars[(spinner_counter / 2) % spinner_chars.len()];
+                        all_models = vec![format!("{} Fetching models...", spinner)];
+                    }
+                }
+            }
+
+            // Filter models based on search query
+            let filtered_models: Vec<String> = if search_query.is_empty() {
+                all_models.clone()
+            } else {
+                all_models.iter()
+                    .filter(|model| model.to_lowercase().contains(&search_query.to_lowercase()))
+                    .cloned()
+                    .collect()
+            };
+
+            // Update selected_idx to be within bounds of filtered models
+            if filtered_models.is_empty() {
+                selected_idx = 0;
+            } else if selected_idx >= filtered_models.len() {
+                selected_idx = filtered_models.len() - 1;
+            }
+
+            // Render with search state and loading indicator
+            self.render_model_selector_with_search(&filtered_models, selected_idx, &search_query, loading_spinner)?;
+
+            if event::poll(Duration::from_millis(100))? {
+                match event::read()? {
+                    Event::Key(key_event) => {
+                        // Only handle key press events to avoid double-processing on Windows
+                        if key_event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+
+                        match key_event.code {
+                            KeyCode::Up => {
+                                if selected_idx > 0 && !filtered_models.is_empty() {
+                                    selected_idx -= 1;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if selected_idx + 1 < filtered_models.len() {
+                                    selected_idx += 1;
+                                }
+                            }
+                            KeyCode::PageUp => {
+                                if selected_idx > 10 {
+                                    selected_idx -= 10;
+                                } else {
+                                    selected_idx = 0;
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                if !filtered_models.is_empty() && selected_idx + 10 < filtered_models.len() {
+                                    selected_idx += 10;
+                                } else if !filtered_models.is_empty() {
+                                    selected_idx = filtered_models.len() - 1;
+                                }
+                            }
+                            KeyCode::Home => {
+                                selected_idx = 0;
+                            }
+                            KeyCode::End => {
+                                if !filtered_models.is_empty() {
+                                    selected_idx = filtered_models.len() - 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if !filtered_models.is_empty() {
+                                    app.set_model(&filtered_models[selected_idx]);
+                                    output.print_system(&format!(
+                                        "✅ Model set to: {}",
+                                        filtered_models[selected_idx]
+                                    ))?;
+                                }
+                                break;
+                            }
+                            KeyCode::Esc => {
+                                break;
+                            }
+                            KeyCode::Backspace => {
+                                if !search_query.is_empty() {
+                                    search_query.pop();
+                                }
+                            }
+                            KeyCode::Char(c) if c.is_ascii() && !c.is_control() => {
+                                if !loading_spinner {
+                                    search_query.push(c);
+                                    // Reset selection when typing
+                                    selected_idx = 0;
+                                }
+                            }
+                            KeyCode::Char('r') if key_event.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                                if loading_spinner {
+                                    self.debug_log_append("Ctrl+R retry triggered");
+                                    let _ = output.print_system("🔄 Retrying model fetch...");
+                                    app.fetch_openrouter_models();
+                                    spinner_counter = 0; // Reset timeout counter
+                                }
+                            }
+                            KeyCode::Char('c') if key_event.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                                if loading_spinner {
+                                    self.debug_log_append("Ctrl+C clear cache triggered");
+                                    let _ = app.cache_openrouter_models(Vec::new());
+                                    let _ = output.print_system("🗑️ Cache cleared");
+                                    spinner_counter = 0;
+                                }
+                            }
+                            _ => {
+                                // Ignore other keys
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {
+                        // Ignore other event types
+                        continue;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_model_selector(&self, models: &[String], selected_idx: usize) -> Result<()> {
+        self.render_model_selector_with_search(models, selected_idx, "", false)
+    }
+
+    fn render_model_selector_with_search(&self, models: &[String], selected_idx: usize, search_query: &str, loading: bool) -> Result<()> {
+        let (cols, rows) = size()?;
+
+        stdout().queue(terminal::Clear(terminal::ClearType::All))?;
+
+        let menu_width = 50.min(cols.saturating_sub(4));
+        let menu_height = models.len() + 4;
+        let menu_height_u16 = menu_height as u16;
+
+        // Calculate layout that fits within terminal height
+        let total_models = models.len();
+
+        // Reserve space for title (1), search (1), borders (2), navigation (1) = 5 lines total
+        let available_height = rows.saturating_sub(6) as usize; // Leave extra padding
+        let max_visible_models = available_height.max(1);
+
+        // Use single column layout with proper width
+        let menu_width = std::cmp::min(cols.saturating_sub(8), 60); // Good width for model names
+        let menu_height = std::cmp::min(max_visible_models, total_models) + 6; // +6 for title, search, borders, navigation
+        let menu_height_u16 = menu_height as u16;
+
+        // Ensure menu fits in terminal
+        let final_menu_height = if menu_height_u16 > rows.saturating_sub(4) {
+            rows.saturating_sub(4) as usize
+        } else {
+            menu_height
+        };
+
+        let start_x = if cols > menu_width { cols.saturating_sub(menu_width) / 2 } else { 0 };
+        let start_y = if rows > final_menu_height as u16 { rows.saturating_sub(final_menu_height as u16) / 2 } else { 0 };
+
+        // Calculate viewport - ensure selected item is visible
+        let actual_visible_models = std::cmp::min(max_visible_models, final_menu_height.saturating_sub(6));
+        let viewport_start = if selected_idx >= actual_visible_models {
+            selected_idx - actual_visible_models + 1
+        } else {
+            0
+        };
+        let viewport_end = std::cmp::min(viewport_start + actual_visible_models, total_models);
+
+        // Display title with search hint
+        let title = if search_query.is_empty() {
+            format!("Select AI Model ({} models)", total_models)
+        } else {
+            format!("Select AI Model ({} of {} filtered)", models.len(), total_models)
+        };
+        self.draw_modern_box(start_x, start_y, menu_width, final_menu_height as u16, &title)?;
+
+        // Show search input
+        let search_y = start_y + 1;
+        let search_text = if loading {
+            "🔄 Fetching models...".to_string()
+        } else if search_query.is_empty() {
+            "🔍 Type to search models".to_string()
+        } else {
+            format!("🔍 Search: {}", search_query)
+        };
+
+        stdout().queue(MoveTo(start_x + 2, search_y))?
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
+              .queue(Print(search_text))?
+              .queue(ResetColor)?;
+
+        // Display models in viewport
+        let max_text_width = menu_width.saturating_sub(6) as usize; // Leave space for prefix and padding
+
+        for (idx, model) in models.iter().enumerate().skip(viewport_start).take(viewport_end - viewport_start) {
+            let y = start_y + 3 + (idx - viewport_start) as u16;
+
+            // Truncate long model names to fit
+            let display_text = if model.len() > max_text_width {
+                format!("{}...", &model[..max_text_width.saturating_sub(3)])
+            } else {
+                model.clone()
+            };
+
+            let prefix = if idx == selected_idx { "▶ " } else { "  " };
+            let text = format!("{}{}", prefix, display_text);
+
+            let color = if idx == selected_idx {
+                SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI))
+            } else {
+                SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI))
+            };
+
+            stdout().queue(MoveTo(start_x + 2, y))?
+                  .queue(color)?
+                  .queue(Print(text))?
+                  .queue(ResetColor)?;
+        }
+
+        // Show navigation hint
+        let nav_y = start_y + final_menu_height as u16 - 1;
+        let nav_text = if models.is_empty() {
+            "No models found".to_string()
+        } else if loading {
+            "↑↓ Navigate • Ctrl+R: retry • Ctrl+C: clear cache • ESC: cancel".to_string()
+        } else if viewport_start == 0 && viewport_end == total_models {
+            // All models visible
+            "↑↓ Navigate".to_string()
+        } else {
+            // Showing a subset - show position
+            format!("↑↓ Navigate ({}-{} of {})",
+                    viewport_start + 1, viewport_end, total_models)
+        };
+        stdout().queue(MoveTo(start_x + 2, nav_y))?
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
+              .queue(Print(nav_text))?
+              .queue(ResetColor)?;
 
         stdout().flush()?;
         Ok(())
@@ -569,10 +1046,10 @@ impl OverlayMenu {
 
         stdout().queue(terminal::Clear(terminal::ClearType::All))?;
 
-        let menu_width = 60.min(cols - 4);
+        let menu_width = 60.min(cols.saturating_sub(4));
         let menu_height = 6u16;
-        let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2;
+        let start_x = cols.saturating_sub(menu_width) / 2;
+        let start_y = rows.saturating_sub(menu_height) / 2;
 
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, prompt)?;
 
@@ -654,10 +1131,14 @@ impl OverlayMenu {
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "📊 Session Information")?;
 
         let config = app.get_config();
+
+        // Calculate max width for text (menu_width - 4 for padding)
+        let max_text_width = menu_width.saturating_sub(4) as usize;
+
         let info_lines = vec![
-            format!("🤖 Provider: {}", config.ai.provider),
-            format!("🧠 Model: {}", config.ai.model),
-            format!("🌐 API URL: {}", config.ai.api_url),
+            format!("🤖 Provider: {}", Self::truncate_text(&config.ai.provider, max_text_width.saturating_sub(12))),
+            format!("🧠 Model: {}", Self::truncate_text(&config.ai.model, max_text_width.saturating_sub(10))),
+            format!("🌐 API URL: {}", Self::truncate_text(&config.ai.api_url, max_text_width.saturating_sub(12))),
             format!("💬 Messages: {}", app.messages.len()),
         ];
 
@@ -966,10 +1447,15 @@ impl OverlayMenu {
         let config = app.get_config();
         let mut display_options = self.config_options.clone();
 
-        // Update display values with modern styling
-        display_options[0] = format!("○ Provider: {}", config.ai.provider);
-        display_options[1] = format!("○ Model: {}", config.ai.model);
-        display_options[2] = format!("○ API URL: {}", config.ai.api_url);
+        let menu_width = 60.min(cols - 8);
+
+        // Calculate max width for menu items (menu_width - 6 for padding and marker)
+        let max_item_width = menu_width.saturating_sub(6) as usize;
+
+        // Update display values with modern styling and overflow protection
+        display_options[0] = format!("○ Provider: {}", Self::truncate_text(&config.ai.provider, max_item_width.saturating_sub(13)));
+        display_options[1] = format!("○ Model: {}", Self::truncate_text(&config.ai.model, max_item_width.saturating_sub(11)));
+        display_options[2] = format!("○ API URL: {}", Self::truncate_text(&config.ai.api_url, max_item_width.saturating_sub(13)));
         display_options[3] = format!(
             "○ API Key: {}",
             if config.ai.api_key.is_empty() {
@@ -978,8 +1464,6 @@ impl OverlayMenu {
                 "••••••••"
             }
         );
-
-        let menu_width = 60.min(cols - 8);
         let menu_height = 12; // Fixed height for consistency
         let start_x = (cols - menu_width) / 2;
         let start_y = (rows - menu_height) / 2;
@@ -1020,7 +1504,7 @@ impl OverlayMenu {
 
         // Draw modern help text
         let help_y = start_y + menu_height - 2;
-        let help_text = "↑↓ Edit • Enter Select • ← Back • ESC Exit";
+        let help_text = "↑↓ Edit • Enter Select • ESC Exit";
         let help_len = help_text.len() as u16;
         let help_x = if menu_width > help_len + 2 {
             start_x + menu_width / 2 - help_len / 2

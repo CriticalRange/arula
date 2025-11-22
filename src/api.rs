@@ -65,6 +65,7 @@ pub enum AIProvider {
     Claude,
     Ollama,
     ZAiCoding,
+    OpenRouter,
     Custom,
 }
 
@@ -84,6 +85,7 @@ impl ApiClient {
             "claude" | "anthropic" => AIProvider::Claude,
             "ollama" => AIProvider::Ollama,
             "z.ai coding plan" | "z.ai" | "zai" => AIProvider::ZAiCoding,
+            "openrouter" => AIProvider::OpenRouter,
             _ => AIProvider::Custom,
         };
 
@@ -158,6 +160,7 @@ impl ApiClient {
             AIProvider::Claude => self.send_claude_request(messages).await,
             AIProvider::Ollama => self.send_ollama_request(messages).await,
             AIProvider::ZAiCoding => self.send_zai_request(messages).await,
+            AIProvider::OpenRouter => self.send_openrouter_request(messages).await,
             AIProvider::Custom => self.send_custom_request(messages).await,
         }
     }
@@ -306,6 +309,7 @@ impl ApiClient {
                         AIProvider::Claude => client.send_claude_request(messages).await,
                         AIProvider::Ollama => client.send_ollama_request(messages).await,
                         AIProvider::ZAiCoding => client.send_zai_request(messages).await,
+                        AIProvider::OpenRouter => client.send_openrouter_request(messages).await,
                         AIProvider::Custom => client.send_custom_request(messages).await,
                         _ => Err(anyhow::anyhow!("Unsupported provider")),
                     };
@@ -702,6 +706,123 @@ impl ApiClient {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             Err(anyhow::anyhow!("Z.AI API request failed: {}", error_text))
+        }
+    }
+
+    async fn send_openrouter_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
+        // OpenRouter uses OpenAI-compatible format
+        let request_body = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 2048,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_bash",
+                        "description": "Execute bash shell commands. Use this when you need to run shell commands, check files, navigate directories, install packages, etc.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {
+                                    "type": "string",
+                                    "description": "The bash command to execute"
+                                }
+                            },
+                            "required": ["command"]
+                        }
+                    }
+                }
+            ],
+            "tool_choice": "auto"
+        });
+
+        let mut request_builder = self
+            .client
+            .post(format!("{}/chat/completions", self.endpoint))
+            .json(&request_body);
+
+        // Add authorization header if API key is provided
+        if !self.api_key.is_empty() {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        // Add OpenRouter-specific headers
+        request_builder = request_builder
+            .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli")
+            .header("X-Title", "ARULA CLI");
+
+        let response = request_builder.send().await?;
+
+        if response.status().is_success() {
+            let response_json: serde_json::Value = response.json().await?;
+
+            if let Some(choices) = response_json["choices"].as_array() {
+                if let Some(choice) = choices.first() {
+                    let content = choice["message"]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Handle tool calls
+                    let tool_calls = if let Some(calls) = choice["message"]["tool_calls"].as_array()
+                    {
+                        Some(
+                            calls
+                                .iter()
+                                .map(|tool_call| ToolCall {
+                                    id: tool_call["id"].as_str().unwrap_or_default().to_string(),
+                                    r#type: "function".to_string(),
+                                    function: ToolCallFunction {
+                                        name: tool_call["function"]["name"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                        arguments: tool_call["function"]["arguments"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                    },
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    } else {
+                        None
+                    };
+
+                    Ok(ApiResponse {
+                        response: content,
+                        success: true,
+                        error: None,
+                        usage: None, // TODO: Parse usage from response if needed
+                        tool_calls,
+                    })
+                } else {
+                    Ok(ApiResponse {
+                        response: "No response received".to_string(),
+                        success: false,
+                        error: Some("No choices in response".to_string()),
+                        usage: None,
+                        tool_calls: None,
+                    })
+                }
+            } else {
+                Ok(ApiResponse {
+                    response: "No response received".to_string(),
+                    success: false,
+                    error: Some("No choices in response".to_string()),
+                    usage: None,
+                    tool_calls: None,
+                })
+            }
+        } else {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            Err(anyhow::anyhow!("OpenRouter API request failed: {}", error_text))
         }
     }
 

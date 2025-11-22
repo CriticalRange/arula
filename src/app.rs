@@ -5,8 +5,10 @@ use crate::config::Config;
 use crate::tool_call::{execute_bash_tool, ToolCall, ToolCallResult};
 use anyhow::Result;
 use futures::StreamExt;
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -48,7 +50,9 @@ pub struct App {
     pub cancellation_token: CancellationToken,
     // Task handle for aborting in-flight requests
     pub current_task_handle: Option<tokio::task::JoinHandle<()>>,
-}
+    // Model cache for OpenRouter models
+    pub openrouter_models: Arc<Mutex<Option<Vec<String>>>>,
+    }
 
 impl App {
     pub fn new() -> Result<Self> {
@@ -66,6 +70,7 @@ impl App {
             debug: false,
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
+            openrouter_models: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -591,6 +596,141 @@ The user will manually rebuild after exiting the application.
         self.cancellation_token = CancellationToken::new();
         // Clear the response receiver so is_waiting_for_response() returns false
         self.ai_response_rx = None;
+    }
+
+    /// Get cached OpenRouter models, returning None if not cached
+    pub fn get_cached_openrouter_models(&self) -> Option<Vec<String>> {
+        match self.openrouter_models.lock() {
+            Ok(cache) => cache.clone(),
+            Err(e) => {
+                eprintln!("Failed to lock OpenRouter models cache for reading: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cache OpenRouter models
+    pub fn cache_openrouter_models(&self, models: Vec<String>) {
+        match self.openrouter_models.lock() {
+            Ok(mut cache) => {
+                *cache = Some(models);
+            }
+            Err(e) => {
+                eprintln!("Failed to lock OpenRouter models cache for writing: {}", e);
+            }
+        }
+    }
+
+    /// Fetch OpenRouter models asynchronously (runs in background)
+    pub fn fetch_openrouter_models(&self) {
+        let api_key = self.config.ai.api_key.clone();
+        let models_cache = self.openrouter_models.clone();
+
+        // Clear existing cache first
+        if let Ok(mut cache) = models_cache.lock() {
+            *cache = None;
+        }
+
+        // Use Handle::current to get current runtime handle
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                eprintln!("🔄 Starting OpenRouter model fetch...");
+                let result = Self::fetch_openrouter_models_async(&api_key).await;
+                match result {
+                    Some(models) => {
+                        eprintln!("✅ Successfully fetched {} OpenRouter models", models.len());
+                        match models_cache.lock() {
+                            Ok(mut cache) => {
+                                *cache = Some(models);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to lock OpenRouter models cache: {}", e);
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("❌ Failed to fetch OpenRouter models");
+                    }
+                }
+            });
+        } else {
+            // No tokio runtime available, do nothing
+            eprintln!("Warning: No tokio runtime available for OpenRouter model fetching");
+        }
+    }
+
+    /// Async function to fetch OpenRouter models
+    async fn fetch_openrouter_models_async(api_key: &str) -> Option<Vec<String>> {
+        use reqwest::Client;
+        use std::time::Duration;
+
+        // Create HTTP client
+        let client = match Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent("arula-cli/1.0")
+            .build()
+        {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!("Failed to create HTTP client: {}", e);
+                return None;
+            }
+        };
+
+        // Build request
+        let mut request = client.get("https://openrouter.ai/api/v1/models");
+
+        // Add authorization header if API key is provided
+        if !api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        // Make request
+        match request.send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<Value>().await {
+                        Ok(json) => {
+                            let mut models = Vec::new();
+
+                            // Parse the response
+                            if let Some(data) = json["data"].as_array() {
+                                for model_info in data {
+                                    if let Some(id) = model_info["id"].as_str() {
+                                        // Filter for text-based models
+                                        if let Some(architecture) = model_info["architecture"].as_object() {
+                                            if let Some(modality) = architecture["modality"].as_str() {
+                                                if modality.contains("text") || modality.contains("text->text") {
+                                                    models.push(id.to_string());
+                                                }
+                                            }
+                                        } else {
+                                            // Fallback: include if no architecture info
+                                            models.push(id.to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Sort models alphabetically
+                            models.sort();
+                            Some(models)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to parse OpenRouter response: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    eprintln!("OpenRouter API returned status: {}", response.status());
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to fetch OpenRouter models: {}", e);
+                None
+            }
+        }
     }
 
     /// Check if the current request is cancelled
