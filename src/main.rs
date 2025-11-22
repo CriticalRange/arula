@@ -441,6 +441,15 @@ async fn main() -> Result<()> {
                     continue 'main_loop;
                 }
 
+                if input == "__SHOW_EXIT_MENU__" {
+                    // Ctrl+C - show exit menu
+                    if menu.show_exit_confirmation(&mut output)? {
+                        output.print_system("Goodbye! 👋")?;
+                        graceful_exit();
+                    }
+                    continue 'main_loop;
+                }
+
                 // Handle Ctrl+D (EOF)
                 if input.is_empty() {
                     output.print_system("Goodbye! 👋")?;

@@ -42,17 +42,22 @@ pub struct AppState {
     pub session_id: String,
     pub esc_count: usize, // Track ESC presses for double-ESC menu trigger
     pub last_esc_time: std::time::Instant, // Track timing for ESC double-press
+    pub last_signal_time: std::time::Instant, // Track timing for signal frequency
+    pub ctrl_c_pending: bool, // Flag to indicate Ctrl+C was pressed (not ESC)
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let now = std::time::Instant::now();
         Self {
             ai_state: AiState::Ready,
             token_count: 0,
             token_limit: 8192,
             session_id: "new".to_string(),
             esc_count: 0,
-            last_esc_time: std::time::Instant::now(),
+            last_esc_time: now,
+            last_signal_time: now,
+            ctrl_c_pending: false,
         }
     }
 }
@@ -294,11 +299,18 @@ impl ReedlineInput {
             ReedlineEvent::Menu("completion_menu".to_string()),
         );
 
-        // ESC triggers CtrlC signal for our custom handling
+        // ESC triggers CtrlC signal for double-ESC handling
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Esc,
             ReedlineEvent::CtrlC,
+        );
+
+        // Bind Ctrl+C to a different signal type - let's try EndOfFile
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+            ReedlineEvent::UntilFound(vec![ReedlineEvent::CtrlD]), // Try CtrlD signal
         );
 
         // Create edit mode with keybindings
@@ -387,23 +399,16 @@ impl ReedlineInput {
     /// Check if ESC was pressed and handle double-ESC logic
     /// Returns: None (continue), Some(true) (show menu), Some(false) (cancel/clear)
     pub fn check_esc_state(&mut self) -> Option<bool> {
-        let mut state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap();
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(state.last_esc_time);
 
-        // Reset counter if too much time passed (>1 second)
-        if elapsed.as_secs() > 1 {
-            state.esc_count = 0;
-        }
-
-        // Check current ESC count
-        if state.esc_count >= 2 {
-            // Second ESC - show menu
-            state.esc_count = 0;
+        // If more than 500ms passed, this can't be a double-ESC
+        if elapsed.as_millis() > 500 {
+            None
+        } else if state.esc_count >= 2 {
+            // Second ESC within 500ms - show menu
             Some(true)
-        } else if state.esc_count == 1 {
-            // First ESC - cancel/clear
-            Some(false)
         } else {
             None
         }
@@ -412,7 +417,9 @@ impl ReedlineInput {
     /// Track ESC press
     pub fn track_esc(&mut self) {
         let mut state = self.state.lock().unwrap();
-        state.last_esc_time = std::time::Instant::now();
+        let now = std::time::Instant::now();
+        state.last_esc_time = now;
+        state.last_signal_time = now;
         state.esc_count += 1;
     }
 
@@ -429,6 +436,32 @@ impl ReedlineInput {
 
             match sig {
                 Signal::Success(buffer) => {
+                    // Check for ESC Menu event
+                    if buffer == "__ESC_EVENT__" {
+                        // Track ESC press and handle double ESC logic
+                        let now = std::time::Instant::now();
+                        let should_show_menu = {
+                            let state = self.state.lock().unwrap();
+                            let elapsed = now.duration_since(state.last_esc_time);
+
+                            // If less than 500ms since last ESC, show menu (double ESC)
+                            if elapsed.as_millis() <= 500 && state.esc_count >= 1 {
+                                true
+                            } else {
+                                false
+                            }
+                        };
+
+                        self.track_esc();
+
+                        if should_show_menu {
+                            self.reset_esc();
+                            return Ok(Some("__SHOW_MENU__".to_string()));
+                        } else {
+                            continue; // Single ESC, continue
+                        }
+                    }
+
                     // Reset ESC counter on successful input
                     self.reset_esc();
 
@@ -463,31 +496,32 @@ impl ReedlineInput {
                     return Ok(Some(processed));
                 }
                 Signal::CtrlC => {
-                    // Track as ESC press for double-ESC detection
-                    self.track_esc();
+                    // ESC signal - handle double ESC logic
+                    let now = std::time::Instant::now();
+                    let should_show_main_menu = {
+                        let state = self.state.lock().unwrap();
+                        let elapsed_since_last_esc = now.duration_since(state.last_esc_time);
 
-                    // Debug: Check ESC count
-                    let esc_count = self.state.lock().unwrap().esc_count;
-                    eprintln!("DEBUG: ESC pressed, count = {}", esc_count);
+                        // If recent ESC activity and count >= 1, treat as double ESC
+                        elapsed_since_last_esc.as_millis() <= 500 && state.esc_count >= 1
+                    };
 
-                    // Check if this triggers menu
-                    if let Some(show_menu) = self.check_esc_state() {
-                        if show_menu {
-                            eprintln!("DEBUG: Double ESC detected - showing menu");
-                            return Ok(Some("__SHOW_MENU__".to_string()));
-                        } else {
-                            eprintln!("DEBUG: Single ESC detected - canceling");
-                            // First ESC - return cancel signal
-                            return Ok(Some("__ESC__".to_string()));
-                        }
+                    if should_show_main_menu {
+                        // Double ESC - show main menu
+                        self.reset_esc();
+                        return Ok(Some("__SHOW_MENU__".to_string()));
                     }
 
-                    // Clear current input, don't exit
+                    // Track this ESC press
+                    self.track_esc();
+
+                    // First ESC - just clear input and continue
                     continue;
                 }
-                Signal::CtrlD => {
-                    // EOF - exit signal
-                    return Ok(None);
+                                Signal::CtrlD => {
+                    // CtrlD signal - could be actual CtrlD or Ctrl+C (mapped via UntilFound)
+                    // Since we use UntilFound to map Ctrl+C to CtrlD, treat as Ctrl+C
+                    return Ok(Some("__SHOW_EXIT_MENU__".to_string()));
                 }
             }
         }

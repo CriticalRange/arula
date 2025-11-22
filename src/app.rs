@@ -567,7 +567,7 @@ The user will manually rebuild after exiting the application.
                         }
                     }
                     None => {
-                        eprintln!("❌ Failed to fetch OpenRouter models");
+                        // Silent failure - don't set error state, let next retry attempt work fresh
                     }
                 }
             });
@@ -690,7 +690,9 @@ The user will manually rebuild after exiting the application.
                             Err(e) => eprintln!("Failed to lock OpenAI models cache: {}", e),
                         }
                     }
-                    None => eprintln!("❌ Failed to fetch OpenAI models"),
+                    None => {
+                        // Silent failure - don't set error state, let next retry attempt work fresh
+                    }
                 }
             });
         } else {
@@ -796,7 +798,9 @@ The user will manually rebuild after exiting the application.
                             Err(e) => eprintln!("Failed to lock Anthropic models cache: {}", e),
                         }
                     }
-                    None => eprintln!("❌ Failed to fetch Anthropic models"),
+                    None => {
+                        // Silent failure - don't set error state, let next retry attempt work fresh
+                    }
                 }
             });
         } else {
@@ -856,7 +860,9 @@ The user will manually rebuild after exiting the application.
                             Err(e) => eprintln!("Failed to lock Ollama models cache: {}", e),
                         }
                     }
-                    None => eprintln!("❌ Failed to fetch Ollama models"),
+                    None => {
+                        // Silent failure - don't set error state, let next retry attempt work fresh
+                    }
                 }
             });
         } else {
@@ -938,7 +944,9 @@ The user will manually rebuild after exiting the application.
                             Err(e) => eprintln!("Failed to lock Z.AI models cache: {}", e),
                         }
                     }
-                    None => eprintln!("❌ Failed to fetch Z.AI models"),
+                    None => {
+                        // Silent failure - don't set error state, let next retry attempt work fresh
+                    }
                 }
             });
         } else {

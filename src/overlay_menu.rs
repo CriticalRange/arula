@@ -50,17 +50,16 @@ impl OverlayMenu {
         Self {
             selected_index: 0,
             main_options: vec![
-                "💬 Continue Chat".to_string(),
-                "⚙️  Settings".to_string(),
-                "ℹ️  Info & Help".to_string(),
-                "🧹 Clear Chat".to_string(),
-                "🚪 Exit ARULA".to_string(),
+                "⦿ Continue Chat".to_string(),
+                "⚙ Settings".to_string(),
+                "ℹ Info & Help".to_string(),
+                "Ⓒ Clear Chat".to_string(),
             ],
             config_options: vec![
                 "🤖 AI Provider".to_string(),
                 "🧠 AI Model".to_string(),
                 "🌐 API URL".to_string(),
-                "🔑 API Key".to_string(),
+                "🔓 API Key".to_string(),
                 "← Back to Menu".to_string(),
             ],
             is_in_config: false,
@@ -75,24 +74,154 @@ impl OverlayMenu {
         self.show_menu(app, output, true)
     }
 
-    pub fn show_exit_confirmation(&mut self, _output: &mut OutputHandler) -> Result<bool> {
-        let (_original_cols, _original_rows) = size()?;
+    pub fn show_exit_confirmation(&mut self, output: &mut OutputHandler) -> Result<bool> {
+        self.show_exit_menu(output)
+    }
 
-        // Enter alternate screen and hide cursor (raw mode is already handled by main app)
+    fn show_exit_menu(&mut self, output: &mut OutputHandler) -> Result<bool> {
+        let (cols, rows) = size()?;
+
+        // Ensure minimum space for menu
+        if cols < 30 || rows < 8 {
+            output.print_system("Terminal too small for exit menu")?;
+            return Ok(false);
+        }
+
+        // Save terminal state and enter raw mode
+        terminal::enable_raw_mode()?;
+
+        // Enter alternate screen and hide cursor
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(Hide)?;
 
-        // Clear screen ONCE on entry to alternate screen for clean start
+        // Clear screen for clean start
         stdout().execute(terminal::Clear(terminal::ClearType::All))?;
         stdout().flush()?;
 
-        // Show confirmation dialog directly (no animation)
-        let result = self.show_confirm_dialog("Exit ARULA?")?;
+        let mut selected_index = 0; // 0 = Stay, 1 = Exit
+        let options = vec![
+            "Stay in ARULA CLI".to_string(),
+            "Exit ARULA CLI".to_string(),
+        ];
 
-        // Cleanup and restore terminal (with proper cursor restoration)
-        self.cleanup_terminal()?;
+        loop {
+            // Render menu
+            self.render_exit_menu(&options, selected_index, output)?;
 
-        Ok(result)
+            // Handle input
+            match event::read()? {
+                Event::Key(key_event) => {
+                    // Only handle key press events to avoid double-processing
+                    if key_event.kind != KeyEventKind::Press {
+                        continue;
+                    }
+
+                    match key_event.code {
+                        KeyCode::Up => {
+                            selected_index = if selected_index == 0 { options.len() - 1 } else { selected_index - 1 };
+                        }
+                        KeyCode::Down => {
+                            selected_index = (selected_index + 1) % options.len();
+                        }
+                        KeyCode::Left => {
+                            selected_index = if selected_index == 0 { options.len() - 1 } else { selected_index - 1 };
+                        }
+                        KeyCode::Right => {
+                            selected_index = (selected_index + 1) % options.len();
+                        }
+                        KeyCode::Esc => {
+                            // ESC goes back (stay)
+                            self.cleanup_terminal()?;
+                            return Ok(false);
+                        }
+                        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Ctrl+C exits (same as selecting Exit)
+                            self.cleanup_terminal()?;
+                            return Ok(true);
+                        }
+                        KeyCode::Enter => {
+                            let should_exit = selected_index == 1;
+                            self.cleanup_terminal()?;
+                            return Ok(should_exit);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn render_exit_menu(&self, options: &[String], selected_idx: usize, _output: &mut OutputHandler) -> Result<()> {
+        let (cols, rows) = size()?;
+
+        // Conservative menu sizing
+        let menu_width = 50.min(cols.saturating_sub(6));
+        let menu_height = 10u16;
+        let start_x = if cols > menu_width { (cols - menu_width) / 2 } else { 0 };
+        let start_y = if rows > menu_height { (rows - menu_height) / 2 } else { 0 };
+
+        self.draw_modern_box(start_x, start_y, menu_width, menu_height, "EXIT")?;
+
+        // Draw title
+        let title = "Exit ARULA CLI?";
+        let title_x = if menu_width > title.len() as u16 {
+            start_x + (menu_width - title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(title_x, start_y + 1))?
+              .queue(Print(ColorTheme::primary().bold().apply_to(title)))?;
+
+        // Draw warning text about stopping instances
+        let warning_y = start_y + 3;
+        let warning_text = "All working instances will be stopped.";
+        let warning_x = if menu_width > warning_text.len() as u16 {
+            start_x + (menu_width - warning_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(warning_x, warning_y))?
+              .queue(SetForegroundColor(crossterm::style::Color::Yellow))?
+              .queue(Print(warning_text))?
+              .queue(ResetColor)?;
+
+        // Draw options
+        let options_start_y = start_y + 5;
+        for (i, option) in options.iter().enumerate() {
+            let y_pos = options_start_y + i as u16;
+            if i == selected_idx {
+                self.draw_selected_item(start_x + 2, y_pos, menu_width - 4, option)?;
+            } else {
+                // Draw unselected item
+                stdout().queue(MoveTo(start_x + 2, y_pos))?;
+                // Clear the line first
+                for _ in 0..(menu_width - 4) {
+                    stdout().queue(Print(" "))?;
+                }
+                // Then draw the text
+                stdout().queue(MoveTo(start_x + 4, y_pos))?
+                      .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
+                      .queue(Print(option))?
+                      .queue(ResetColor)?;
+            }
+        }
+
+        // Draw footer
+        let footer_y = start_y + menu_height - 1;
+        let nav_text = "↑↓ Navigate • Enter Select • ESC Stay";
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
+        stdout().queue(MoveTo(nav_x, footer_y))?
+              .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
+              .queue(Print(nav_text))?
+              .queue(ResetColor)?;
+
+        stdout().flush()?;
+        Ok(())
     }
 
     fn render_exit_confirmation(&self, message: &str) -> Result<()> {
@@ -122,7 +251,10 @@ impl OverlayMenu {
         // Save terminal state and cursor style
         let (_original_cols, _original_rows) = size()?;
 
-        // Enter alternate screen and hide cursor (raw mode is already handled by main app)
+        // Enable raw mode for proper key event handling
+        terminal::enable_raw_mode()?;
+
+        // Enter alternate screen and hide cursor
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(Hide)?;
 
@@ -321,13 +453,6 @@ impl OverlayMenu {
                     let _ = event::read()?;
                 }
                 Ok(false)
-            }
-            4 => { // Exit
-                if self.show_confirm_dialog("Exit ARULA?")? {
-                    Ok(true) // Signal to exit application
-                } else {
-                    Ok(false) // Continue with application
-                }
             }
             _ => Ok(false),
         }
@@ -545,7 +670,11 @@ impl OverlayMenu {
         // Draw title/header
         let title_y = start_y + 1;
         let title = "Select AI Provider";
-        let title_x = start_x + (menu_width - title.len() as u16) / 2;
+        let title_x = if menu_width > title.len() as u16 {
+            start_x + (menu_width - title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
         stdout().queue(MoveTo(title_x, title_y))?
               .queue(Print(ColorTheme::primary().bold().apply_to(title)))?;
 
@@ -556,7 +685,8 @@ impl OverlayMenu {
             let text = format!("{}{}", prefix, provider);
 
             // Use atomic padding for consistent rendering
-            let padded_text = format!("{:width$}", text, width = (menu_width - 4) as usize);
+            let text_width = menu_width.saturating_sub(4) as usize;
+        let padded_text = format!("{:width$}", text, width = text_width);
 
             let color = if i == selected_idx {
                 SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI))
@@ -573,7 +703,11 @@ impl OverlayMenu {
         // Draw footer with navigation instructions (centered, intercepting box border)
         let footer_y = start_y + menu_height as u16 - 1;
         let nav_text = "↑↓ Navigate • ↵ Select • ← Back";
-        let nav_x = start_x + (menu_width - nav_text.len() as u16) / 2;
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
 
         stdout().queue(MoveTo(nav_x, footer_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
@@ -616,60 +750,26 @@ impl OverlayMenu {
     fn get_openrouter_models(&self, app: &mut App, output: &mut OutputHandler) -> (Vec<String>, bool) {
         self.debug_log("get_openrouter_models called");
 
-        // First, try to get cached models
-        match app.get_cached_openrouter_models() {
-            Some(cached_models) => {
-                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
-                if !cached_models.is_empty() {
-                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
-                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
-                    return (cached_models, false); // (models, is_loading)
-                } else {
-                    self.debug_log_append("Cache is empty, will start fetching");
-                }
-            }
-            None => {
-                self.debug_log_append("No cache found, will start fetching");
-            }
-        }
-
-        // Start background fetching if no cached models available
-        self.debug_log_append("Starting background fetch");
+        // Always retry fresh - don't persist error states
+        self.debug_log_append("Starting fresh model fetch");
         // Fetch models silently in background
         app.fetch_openrouter_models();
 
         // Return loading state - keep menu open while fetching
-        self.debug_log_append("Returning loading state with 1 model");
+        self.debug_log_append("Returning loading state");
         (vec!["Fetching models...".to_string()], true) // (models, is_loading)
     }
     /// Get OpenAI models with dynamic fetching and caching
     fn get_openai_models(&self, app: &mut App, output: &mut OutputHandler) -> (Vec<String>, bool) {
         self.debug_log("get_openai_models called");
 
-        // First, try to get cached models
-        match app.get_cached_openai_models() {
-            Some(cached_models) => {
-                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
-                if !cached_models.is_empty() {
-                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
-                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
-                    return (cached_models, false); // (models, is_loading)
-                } else {
-                    self.debug_log_append("Cache is empty, will start fetching");
-                }
-            }
-            None => {
-                self.debug_log_append("No cache found, will start fetching");
-            }
-        }
-
-        // Start background fetching if no cached models available
-        self.debug_log_append("Starting background fetch");
+        // Always retry fresh - don't persist error states
+        self.debug_log_append("Starting fresh model fetch");
         // Fetch models silently in background
         app.fetch_openai_models();
 
         // Return loading state - keep menu open while fetching
-        self.debug_log_append("Returning loading state with 1 model");
+        self.debug_log_append("Returning loading state");
         (vec!["Fetching models...".to_string()], true) // (models, is_loading)
     }
 
@@ -678,29 +778,13 @@ impl OverlayMenu {
         self.debug_log("get_anthropic_models called");
 
         // First, try to get cached models
-        match app.get_cached_anthropic_models() {
-            Some(cached_models) => {
-                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
-                if !cached_models.is_empty() {
-                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
-                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
-                    return (cached_models, false); // (models, is_loading)
-                } else {
-                    self.debug_log_append("Cache is empty, will start fetching");
-                }
-            }
-            None => {
-                self.debug_log_append("No cache found, will start fetching");
-            }
-        }
-
-        // Start background fetching if no cached models available
-        self.debug_log_append("Starting background fetch");
+        // Always retry fresh - don't persist error states
+        self.debug_log_append("Starting fresh model fetch");
         // Fetch models silently in background
         app.fetch_anthropic_models();
 
         // Return loading state - keep menu open while fetching
-        self.debug_log_append("Returning loading state with 1 model");
+        self.debug_log_append("Returning loading state");
         (vec!["Fetching models...".to_string()], true) // (models, is_loading)
     }
 
@@ -709,29 +793,13 @@ impl OverlayMenu {
         self.debug_log("get_ollama_models called");
 
         // First, try to get cached models
-        match app.get_cached_ollama_models() {
-            Some(cached_models) => {
-                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
-                if !cached_models.is_empty() {
-                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
-                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
-                    return (cached_models, false); // (models, is_loading)
-                } else {
-                    self.debug_log_append("Cache is empty, will start fetching");
-                }
-            }
-            None => {
-                self.debug_log_append("No cache found, will start fetching");
-            }
-        }
-
-        // Start background fetching if no cached models available
-        self.debug_log_append("Starting background fetch");
+        // Always retry fresh - don't persist error states
+        self.debug_log_append("Starting fresh model fetch");
         // Fetch models silently in background
         app.fetch_ollama_models();
 
         // Return loading state - keep menu open while fetching
-        self.debug_log_append("Returning loading state with 1 model");
+        self.debug_log_append("Returning loading state");
         (vec!["Fetching models...".to_string()], true) // (models, is_loading)
     }
 
@@ -740,29 +808,13 @@ impl OverlayMenu {
         self.debug_log("get_zai_models called");
 
         // First, try to get cached models
-        match app.get_cached_zai_models() {
-            Some(cached_models) => {
-                self.debug_log_append(&format!("Cache found with {} models", cached_models.len()));
-                if !cached_models.is_empty() {
-                    self.debug_log_append(&format!("Cache has {} non-empty models, returning them", cached_models.len()));
-                    let _ = output.print_system(&format!("✅ Using {} cached models", cached_models.len()));
-                    return (cached_models, false); // (models, is_loading)
-                } else {
-                    self.debug_log_append("Cache is empty, will start fetching");
-                }
-            }
-            None => {
-                self.debug_log_append("No cache found, will start fetching");
-            }
-        }
-
-        // Start background fetching if no cached models available
-        self.debug_log_append("Starting background fetch");
+        // Always retry fresh - don't persist error states
+        self.debug_log_append("Starting fresh model fetch");
         // Fetch models silently in background
         app.fetch_zai_models();
 
         // Return loading state - keep menu open while fetching
-        self.debug_log_append("Returning loading state with 1 model");
+        self.debug_log_append("Returning loading state");
         (vec!["Fetching models...".to_string()], true) // (models, is_loading)
     }
 
@@ -786,7 +838,7 @@ impl OverlayMenu {
         }
 
         // For predefined providers, use dynamic fetching with caching
-        let (models, is_loading): (Vec<String>, bool) = match provider.to_lowercase().as_str() {
+        let (mut models, is_loading): (Vec<String>, bool) = match provider.to_lowercase().as_str() {
             "z.ai coding plan" | "z.ai" | "zai" => {
                 // Clear cache to simulate first-run behavior
                 app.cache_zai_models(Vec::new());
@@ -844,7 +896,7 @@ impl OverlayMenu {
 
         // Handle loading state consistently for all providers
         let final_models = if is_loading {
-            models
+            models.clone()
         } else {
             // Models loaded quickly, but we still want to show transition
             vec!["⚡ Loading models...".to_string()]
@@ -1101,12 +1153,20 @@ impl OverlayMenu {
                                 }
                             }
                             KeyCode::Char('r') if key_event.modifiers == crossterm::event::KeyModifiers::CONTROL => {
-                                if loading_spinner {
-                                    self.debug_log_append("Ctrl+R retry triggered");
-                                    let _ = output.print_system("🔄 Retrying model fetch...");
-                                    app.fetch_openrouter_models();
-                                    spinner_counter = 0; // Reset timeout counter
+                                // Always allow retry regardless of loading state
+                                self.debug_log_append("Ctrl+R retry triggered");
+                                // Retry for the specific provider
+                                match provider.to_lowercase().as_str() {
+                                    "openai" => app.fetch_openai_models(),
+                                    "anthropic" => app.fetch_anthropic_models(),
+                                    "ollama" => app.fetch_ollama_models(),
+                                    "z.ai coding plan" | "z.ai" | "zai" => app.fetch_zai_models(),
+                                    "openrouter" => app.fetch_openrouter_models(),
+                                    _ => {}
                                 }
+                                models = vec!["Fetching models...".to_string()];
+                                loading_spinner = true;
+                                spinner_counter = 0; // Reset timeout counter
                             }
                             // General character input for search - only if not a control character
                             KeyCode::Char(c) if c.is_ascii() && !c.is_control() => {
@@ -1200,7 +1260,8 @@ impl OverlayMenu {
         };
 
         // Print search text (pad with spaces to clear previous content)
-        let padded_search = format!("{:width$}", search_text, width = (menu_width - 4) as usize);
+        let search_width = menu_width.saturating_sub(4) as usize;
+        let padded_search = format!("{:width$}", search_text, width = search_width);
         stdout().queue(MoveTo(start_x + 2, search_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
               .queue(Print(&padded_search))?
@@ -1217,7 +1278,8 @@ impl OverlayMenu {
             } else {
                 "🔍 No models found with that name"
             };
-            let padded_msg = format!("{:^width$}", no_results_msg, width = (menu_width - 4) as usize);
+            let msg_width = menu_width.saturating_sub(4) as usize;
+        let padded_msg = format!("{:^width$}", no_results_msg, width = msg_width);
             stdout().queue(MoveTo(start_x + 2, y))?
                   .queue(SetForegroundColor(crossterm::style::Color::DarkGrey))?
                   .queue(Print(&padded_msg))?
@@ -1240,7 +1302,8 @@ impl OverlayMenu {
                 let text = format!("{}{}", prefix, display_text);
 
                 // Pad with spaces to clear any previous content
-                let padded_text = format!("{:width$}", text, width = (menu_width - 4) as usize);
+                let text_width = menu_width.saturating_sub(4) as usize;
+        let padded_text = format!("{:width$}", text, width = text_width);
 
                 let color = if idx == selected_idx {
                     SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI))
@@ -1269,8 +1332,12 @@ impl OverlayMenu {
                     viewport_start + 1, viewport_end, total_models)
         };
 
-        // Print navigation text (centered)
-        let nav_x = start_x + (menu_width - nav_text.len() as u16) / 2;
+        // Print navigation text (centered with overflow protection)
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1 // Fallback to left-aligned with small padding
+        };
         stdout().queue(MoveTo(nav_x, nav_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
               .queue(Print(&nav_text))?
@@ -1305,7 +1372,7 @@ impl OverlayMenu {
 
         // Clear the search line
         stdout().queue(MoveTo(start_x + 2, search_y))?;
-        for _ in 0..(menu_width - 4) {
+        for _ in 0..(menu_width.saturating_sub(4)) {
             stdout().queue(Print(" "))?;
         }
 
@@ -1342,7 +1409,7 @@ impl OverlayMenu {
             if let Some(model) = models.get(old_idx) {
                 // Clear the line
                 stdout().queue(MoveTo(start_x + 2, y))?;
-                for _ in 0..(menu_width - 4) {
+                for _ in 0..(menu_width.saturating_sub(4)) {
                     stdout().queue(Print(" "))?;
                 }
 
@@ -1369,7 +1436,7 @@ impl OverlayMenu {
             if let Some(model) = models.get(new_idx) {
                 // Clear the line
                 stdout().queue(MoveTo(start_x + 2, y))?;
-                for _ in 0..(menu_width - 4) {
+                for _ in 0..(menu_width.saturating_sub(4)) {
                     stdout().queue(Print(" "))?;
                 }
 
@@ -1469,7 +1536,7 @@ impl OverlayMenu {
         // Don't clear entire screen - causes flicker
         // We're in alternate screen mode, so just draw over existing content
 
-        let menu_width = 60.min(cols.saturating_sub(4));
+        let menu_width = 50.min(cols.saturating_sub(6)); // More conservative width for small terminals
         let menu_height = 8u16; // Increased for footer
         let start_x = cols.saturating_sub(menu_width) / 2;
         let start_y = rows.saturating_sub(menu_height) / 2;
@@ -1478,33 +1545,66 @@ impl OverlayMenu {
 
         // Draw title/header
         let title_y = start_y + 1;
-        let title_x = start_x + (menu_width - prompt.len() as u16) / 2;
+        let max_title_width = menu_width.saturating_sub(4) as usize; // Leave space for box borders
+        let display_title = if prompt.len() > max_title_width {
+            // Truncate title to fit within box
+            let char_end = prompt.char_indices()
+                .nth(max_title_width.saturating_sub(3)) // Leave room for "..."
+                .map(|(idx, _)| idx)
+                .unwrap_or(prompt.len());
+            format!("{}...", &prompt[..char_end])
+        } else {
+            prompt.to_string()
+        };
+        let title_x = if menu_width > display_title.len() as u16 {
+            start_x + (menu_width - display_title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
         stdout().queue(MoveTo(title_x, title_y))?
-              .queue(Print(ColorTheme::primary().bold().apply_to(prompt)))?;
+              .queue(Print(ColorTheme::primary().bold().apply_to(display_title)))?;
 
         // Draw input field
         let input_y = start_y + 3;
+        let input_field_width = menu_width.saturating_sub(6) as usize; // Leave space for box borders and padding
         let input_text = if input.is_empty() {
-            "← Type here..."
+            "← Type here...".to_string()
         } else {
-            input
+            // Truncate input text to fit within field width with more conservative approach
+            if input.len() > input_field_width {
+                // Leave room for "..." when truncating
+                let truncate_at = input_field_width.saturating_sub(3);
+                let char_end = input.char_indices()
+                    .nth(truncate_at)
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(input.len());
+                format!("{}...", &input[..char_end])
+            } else {
+                input.to_string()
+            }
         };
 
         // Draw input text with appropriate colors
         if input.is_empty() {
             stdout().queue(MoveTo(start_x + 2, input_y))?
                   .queue(SetForegroundColor(crossterm::style::Color::DarkGrey))?
-                  .queue(Print(input_text))?
+                  .queue(Print(&input_text))?
                   .queue(ResetColor)?;
         } else {
             stdout().queue(MoveTo(start_x + 2, input_y))?
                   .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
-                  .queue(Print(input_text))?
+                  .queue(Print(&input_text))?
                   .queue(ResetColor)?;
         }
 
-        // Draw cursor with primary color
-        let display_cursor_pos = if input.is_empty() { 0 } else { cursor_pos };
+        // Draw cursor with primary color - make sure cursor is within visible range
+        let max_visible_cursor = input_field_width.saturating_sub(1); // Leave space for cursor itself
+        let adjusted_cursor_pos = if cursor_pos > max_visible_cursor {
+            max_visible_cursor
+        } else {
+            cursor_pos
+        };
+        let display_cursor_pos = if input.is_empty() { 0 } else { adjusted_cursor_pos };
         stdout().queue(MoveTo(start_x + 2 + display_cursor_pos as u16, input_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::PRIMARY_ANSI)))?
               .queue(Print("█"))?
@@ -1513,7 +1613,11 @@ impl OverlayMenu {
         // Draw footer with navigation instructions (centered, intercepting box border)
         let footer_y = start_y + menu_height - 1;
         let nav_text = "↵ Submit • Esc Cancel";
-        let nav_x = start_x + (menu_width - nav_text.len() as u16) / 2;
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
 
         stdout().queue(MoveTo(nav_x, footer_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
@@ -1626,7 +1730,7 @@ impl OverlayMenu {
             "  exit or quit - Exit ARULA".to_string(),
             "".to_string(),
             "⌨️  Keyboard Shortcuts:".to_string(),
-            "  Ctrl+C    - Open menu".to_string(),
+            "  Ctrl+C    - Exit menu".to_string(),
             "  m         - Open menu".to_string(),
             "  Ctrl+D    - Exit".to_string(),
             "  Up/Down   - Navigate command history".to_string(),
@@ -1664,7 +1768,11 @@ impl OverlayMenu {
         // Draw title/header
         let title_y = start_y + 1;
         let title = "ARULA Info & Help";
-        let title_x = start_x + (menu_width - title.len() as u16) / 2;
+        let title_x = if menu_width > title.len() as u16 {
+            start_x + (menu_width - title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
         stdout().queue(MoveTo(title_x, title_y))?
               .queue(Print(ColorTheme::primary().bold().apply_to(title)))?;
 
@@ -1679,7 +1787,7 @@ impl OverlayMenu {
             "  exit or quit - Exit ARULA",
             "",
             "⌨️  Keyboard Shortcuts:",
-            "  Ctrl+C    - Open menu",
+            "  Ctrl+C    - Exit menu",
             "  m         - Open menu",
             "  Ctrl+D    - Exit",
             "  Up/Down   - Navigate command history",
@@ -1724,7 +1832,7 @@ impl OverlayMenu {
 
             // Clear the line first to remove any previous content
             stdout().queue(MoveTo(start_x + 2, y))?;
-            for _ in 0..(menu_width - 4) {
+            for _ in 0..(menu_width.saturating_sub(4)) {
                 stdout().queue(Print(" "))?;
             }
 
@@ -1739,7 +1847,7 @@ impl OverlayMenu {
         for i in visible_lines.len()..content_height {
             let y = start_y + 3 + i as u16;
             stdout().queue(MoveTo(start_x + 2, y))?;
-            for _ in 0..(menu_width - 4) {
+            for _ in 0..(menu_width.saturating_sub(4)) {
                 stdout().queue(Print(" "))?;
             }
         }
@@ -1766,7 +1874,11 @@ impl OverlayMenu {
             format!("{} • ↵ Continue • Esc Back", scroll_part)
         };
 
-        let nav_x = start_x + (menu_width - nav_text.len() as u16) / 2;
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
 
         stdout().queue(MoveTo(nav_x, footer_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
@@ -1846,7 +1958,11 @@ impl OverlayMenu {
         // Draw title
         let title_y = start_y + 1;
         let title = message;
-        let title_x = start_x + (menu_width - title.len() as u16) / 2;
+        let title_x = if menu_width > title.len() as u16 {
+            start_x + (menu_width - title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
         stdout().queue(MoveTo(title_x, title_y))?
               .queue(Print(ColorTheme::primary().bold().apply_to(title)))?;
 
@@ -1895,7 +2011,11 @@ impl OverlayMenu {
         // Draw footer with navigation instructions (centered, intercepting box border)
         let footer_y = start_y + menu_height - 1;
         let nav_text = "←→ Navigate • ↵ Select • Esc Cancel";
-        let nav_x = start_x + (menu_width - nav_text.len() as u16) / 2;
+        let nav_x = if menu_width > nav_text.len() as u16 {
+            start_x + (menu_width - nav_text.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
 
         stdout().queue(MoveTo(nav_x, footer_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
@@ -1926,10 +2046,17 @@ impl OverlayMenu {
     fn render_main_menu(&self) -> Result<()> {
         let (cols, rows) = size()?;
 
-        let menu_width = 50.min(cols - 4);
+        // Ensure we have enough space for the menu, prevent underflow
+        let menu_width = 50.min(cols.saturating_sub(4));
         let menu_height = 12; // Fixed height for better layout
-        let start_x = (cols - menu_width) / 2;
-        let start_y = (rows - menu_height) / 2;
+
+        // Only show menu if we have minimum space
+        if cols < 20 || rows < 8 {
+            return Ok(());
+        }
+
+        let start_x = if cols > menu_width { (cols - menu_width) / 2 } else { 0 };
+        let start_y = if rows > menu_height { (rows - menu_height) / 2 } else { 0 };
 
         // Draw modern box with gradient effect
         self.draw_modern_box(start_x, start_y, menu_width, menu_height, "ARULA")?;
@@ -1957,13 +2084,15 @@ impl OverlayMenu {
             } else {
                 // Unselected item - clear the line first to remove any previous selection background
                 stdout().queue(MoveTo(start_x + 2, y))?;
-                for _ in 0..(menu_width - 4) {
+                for _ in 0..(menu_width.saturating_sub(4)) {
                     stdout().queue(Print(" "))?;
                 }
-                // Then draw the text
+                // Then draw the text with truncation
+                let max_text_width = menu_width.saturating_sub(6) as usize; // padding for margins
+                let display_text = Self::truncate_text(option, max_text_width);
                 stdout().queue(MoveTo(start_x + 4, y))?
                       .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::MISC_ANSI)))?
-                      .queue(Print(option))?
+                      .queue(Print(display_text))?
                       .queue(ResetColor)?;
             }
         }
@@ -1971,7 +2100,9 @@ impl OverlayMenu {
         // Draw modern help text (intercepting box border)
         let help_y = start_y + menu_height - 1;
         let help_text = "↑↓ Navigate • Enter Select • ESC Exit";
-        let help_len = help_text.len() as u16;
+        let max_help_width = menu_width.saturating_sub(4) as usize;
+        let display_help = Self::truncate_text(help_text, max_help_width);
+        let help_len = display_help.len() as u16;
         let help_x = if menu_width > help_len + 2 {
             start_x + menu_width / 2 - help_len / 2
         } else {
@@ -1979,7 +2110,7 @@ impl OverlayMenu {
         };
         stdout().queue(MoveTo(help_x, help_y))?
               .queue(SetForegroundColor(crossterm::style::Color::AnsiValue(crate::colors::AI_HIGHLIGHT_ANSI)))?
-              .queue(Print(help_text))?
+              .queue(Print(display_help))?
               .queue(ResetColor)?;
 
         Ok(())
@@ -1988,10 +2119,15 @@ impl OverlayMenu {
     fn render_config_menu(&self, app: &App) -> Result<()> {
         let (cols, rows) = size()?;
 
+        // Ensure we have enough space for the menu, prevent underflow
+        if cols < 25 || rows < 8 {
+            return Ok(());
+        }
+
         let config = app.get_config();
         let mut display_options = self.config_options.clone();
 
-        let menu_width = 60.min(cols - 4);
+        let menu_width = 60.min(cols.saturating_sub(4));
 
         // Calculate max width for menu items (menu_width - 6 for padding and marker)
         let max_item_width = menu_width.saturating_sub(6) as usize;
@@ -2017,7 +2153,7 @@ impl OverlayMenu {
 
         // Draw title with modern styling
         let title_y = start_y + 1;
-        let title = "⚙️ SETTINGS";
+        let title = "⚙ SETTINGS";
         let title_len = title.len() as u16;
         let title_x = if menu_width > title_len + 2 {
             start_x + menu_width / 2 - title_len / 2
@@ -2045,7 +2181,7 @@ impl OverlayMenu {
             } else {
                 // Unselected item - clear the line first to remove any previous selection background
                 stdout().queue(MoveTo(start_x + 2, y))?;
-                for _ in 0..(menu_width - 4) {
+                for _ in 0..(menu_width.saturating_sub(4)) {
                     stdout().queue(Print(" "))?;
                 }
                 // Then draw the text with gray color if not editable
@@ -2144,9 +2280,13 @@ impl OverlayMenu {
         // Draw text with proper spacing and our primary color
         let display_text = format!("▶ {}", text);
         let safe_text = if display_text.len() > width.saturating_sub(4) as usize {
-            // Truncate if too long
+            // Truncate if too long - use character boundaries, not byte boundaries
             let safe_len = width.saturating_sub(7) as usize;
-            format!("▶ {}...", &text[..safe_len.min(text.len())])
+            // Use char_indices to get safe character boundaries
+            let char_end = text.char_indices().nth(safe_len)
+                .map(|(idx, _)| idx)
+                .unwrap_or(text.len());
+            format!("▶ {}...", &text[..char_end])
         } else {
             display_text
         };
@@ -2239,6 +2379,9 @@ impl OverlayMenu {
 
     fn cleanup_terminal(&self) -> Result<()> {
         let mut stdout = stdout();
+
+        // Disable raw mode FIRST to restore normal terminal behavior
+        let _ = terminal::disable_raw_mode();
 
         // Leave alternate screen FIRST to return to main terminal
         stdout.execute(LeaveAlternateScreen)?;
