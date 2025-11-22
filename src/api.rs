@@ -333,32 +333,13 @@ impl ApiClient {
     }
 
     async fn send_openai_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
-        // Create request with tools as JSON
+        // NOTE: Tools are intentionally NOT included here to allow normal conversation
+        // Tools are only added when explicitly needed via send_message_with_tools
         let request_body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 2048,
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "execute_bash",
-                        "description": "Execute bash shell commands. Use this when you need to run shell commands, check files, navigate directories, install packages, etc.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "command": {
-                                    "type": "string",
-                                    "description": "The bash command to execute"
-                                }
-                            },
-                            "required": ["command"]
-                        }
-                    }
-                }
-            ],
-            "tool_choice": "auto"
+            "max_tokens": 2048
         });
 
         let mut request_builder = self
@@ -595,35 +576,15 @@ impl ApiClient {
             .collect();
 
         // Z.AI uses OpenAI-compatible format with specific endpoint
-        let mut request = json!({
+        // NOTE: Tools are intentionally NOT included here to allow normal conversation
+        // Tools are only added when explicitly needed via send_message_with_tools
+        let request = json!({
             "model": self.model,
             "messages": zai_messages,
             "temperature": 0.7,
             "max_tokens": 2048,
             "stream": false
         });
-
-        // Define bash tool
-        request["tools"] = json!([
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_bash",
-                    "description": "Execute bash shell commands. Use this when you need to run shell commands, check files, navigate directories, install packages, etc.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The bash command to execute"
-                            }
-                        },
-                        "required": ["command"]
-                    }
-                }
-            }
-        ]);
-        request["tool_choice"] = json!("required");
 
         let mut request_builder = self
             .client
@@ -711,31 +672,13 @@ impl ApiClient {
 
     async fn send_openrouter_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
         // OpenRouter uses OpenAI-compatible format
+        // NOTE: Tools are intentionally NOT included here to allow normal conversation
+        // Tools are only added when explicitly needed via send_message_with_tools
         let request_body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 2048,
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "execute_bash",
-                        "description": "Execute bash shell commands. Use this when you need to run shell commands, check files, navigate directories, install packages, etc.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "command": {
-                                    "type": "string",
-                                    "description": "The bash command to execute"
-                                }
-                            },
-                            "required": ["command"]
-                        }
-                    }
-                }
-            ],
-            "tool_choice": "auto"
+            "max_tokens": 2048
         });
 
         let mut request_builder = self
@@ -1057,26 +1000,26 @@ impl ApiClient {
         let client = self.clone();
         tokio::spawn(async move {
             match client.provider {
-                AIProvider::OpenAI => {
-                    // Use custom tool-aware OpenAI implementation
+                AIProvider::OpenAI | AIProvider::OpenRouter => {
+                    // Use custom tool-aware OpenAI-compatible implementation
                     match client.send_openai_request_with_tools(messages, tools).await {
                         Ok(response) => {
-                            debug_print("DEBUG: OpenAI response with tools");
+                            debug_print(&format!("DEBUG: {:?} response with tools", client.provider));
                             let _ = tx.send(StreamingResponse::Start);
                             let _ = tx.send(StreamingResponse::Chunk(response.response.clone()));
                             let _ = tx.send(StreamingResponse::End(response));
                         }
                         Err(e) => {
-                            debug_print(&format!("DEBUG: OpenAI request error: {}", e));
+                            debug_print(&format!("DEBUG: {:?} request error: {}", client.provider, e));
                             let _ = tx.send(StreamingResponse::Error(format!(
-                                "OpenAI request error: {}",
+                                "Request error: {}",
                                 e
                             )));
                         }
                     }
                 }
-                AIProvider::Custom => {
-                    // For Z.AI, use the existing zai_formatted_request with tools
+                AIProvider::ZAiCoding | AIProvider::Custom => {
+                    // For Z.AI, use OpenAI-compatible format with tools
                     match client.send_zai_request_with_tools(messages, tools).await {
                         Ok(response) => {
                             debug_print("DEBUG: Z.AI response with tools");
@@ -1120,7 +1063,7 @@ impl ApiClient {
         Ok(rx)
     }
 
-    /// Send OpenAI request with custom tools
+    /// Send OpenAI request with custom tools (also used for OpenRouter)
     async fn send_openai_request_with_tools(
         &self,
         messages: Vec<ChatMessage>,
@@ -1144,6 +1087,13 @@ impl ApiClient {
         if !self.api_key.is_empty() {
             request_builder =
                 request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        // Add OpenRouter-specific headers if using OpenRouter
+        if self.provider == AIProvider::OpenRouter {
+            request_builder = request_builder
+                .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli")
+                .header("X-Title", "ARULA CLI");
         }
 
         let response = request_builder.send().await?;
