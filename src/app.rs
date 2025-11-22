@@ -50,8 +50,12 @@ pub struct App {
     pub cancellation_token: CancellationToken,
     // Task handle for aborting in-flight requests
     pub current_task_handle: Option<tokio::task::JoinHandle<()>>,
-    // Model cache for OpenRouter models
+    // Model caches for all providers
     pub openrouter_models: Arc<Mutex<Option<Vec<String>>>>,
+    pub openai_models: Arc<Mutex<Option<Vec<String>>>>,
+    pub anthropic_models: Arc<Mutex<Option<Vec<String>>>>,
+    pub ollama_models: Arc<Mutex<Option<Vec<String>>>>,
+    pub zai_models: Arc<Mutex<Option<Vec<String>>>>,
     }
 
 impl App {
@@ -71,6 +75,10 @@ impl App {
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
             openrouter_models: Arc::new(Mutex::new(None)),
+            openai_models: Arc::new(Mutex::new(None)),
+            anthropic_models: Arc::new(Mutex::new(None)),
+            ollama_models: Arc::new(Mutex::new(None)),
+            zai_models: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -85,99 +93,6 @@ impl App {
 
         // Base ARULA personality
         prompt_parts.push("You are ARULA, an Autonomous AI Interface assistant. You help users with coding, shell commands, and general software development tasks. Be concise, helpful, and provide practical solutions.".to_string());
-
-        // Available tools documentation
-        prompt_parts.push(r#"
-## Available Tools
-
-You have access to the following tools:
-
-1. **execute_bash** - Execute bash/shell commands
-   - Use for running commands, checking files, installing packages, etc.
-   - Parameters: command (string)
-
-2. **read_file** - Read file contents with optional line range
-   - Parameters: path (string), start_line (optional), end_line (optional)
-
-3. **write_file** - Create or overwrite a file with content
-   - Parameters: path (string), content (string)
-
-4. **edit_file** - Edit files with various operations (replace, insert, delete, append, prepend)
-   - Parameters: path (string), operation (object)
-
-5. **list_directory** - List directory contents with optional recursion
-   - Parameters: path (string), show_hidden (bool), recursive (bool)
-
-6. **search_files** - Fast parallel search with gitignore support
-   - Search for text patterns across files efficiently
-   - Respects .gitignore, .git/info/exclude, and global gitignore
-   - Uses parallel walker for fast searching in large codebases
-   - Parameters:
-     * query (required): Text pattern to search for
-     * path (optional): Directory to search (default: current directory)
-     * file_pattern (optional): Filter by file pattern (e.g., '*.rs', '*.txt')
-     * case_sensitive (optional): Case-sensitive search (default: false)
-     * max_results (optional): Maximum results to return (default: 100)
-   - Returns: Array of matches with file path, line number, line content, and match positions
-   - Use this tool when you need to find text across multiple files or search the codebase
-
-7. **visioneer** - Desktop automation and screen analysis tool
-   - A comprehensive desktop automation framework that combines computer vision, OCR, and intelligent UI interaction
-   - Enables automation of virtually any Windows application
-   - Parameters:
-     * target (required): Window title, process name, or "desktop" for screen-wide operations
-     * action (required): One of 8 action types:
-       - "Capture": Take screenshot with optional region and encoding
-       - "ExtractText": Extract text from screen regions using OCR
-       - "Analyze": Analyze UI elements with AI vision models
-       - "Click": Smart clicking (coordinates, text, pattern, or element-based)
-       - "Type": Type text with configurable delays and clearing
-       - "Hotkey": Execute keyboard shortcuts and combinations
-       - "WaitFor": Wait for UI elements or state changes
-       - "Navigate": Mouse movement and directional controls
-     * ocr_config (optional): OCR engine configuration (language, preprocessing)
-     * vlm_config (optional): Vision-language model settings
-
-   Use Visioneer for:
-   - **Form Automation**: Fill web forms and desktop applications
-   - **Game Bots**: Automate simple game interactions
-   - **Data Extraction**: Extract text from any application
-   - **Workflow Automation**: Complex multi-step business processes
-   - **UI Testing**: Automated testing of desktop applications
-   - **Screen Analysis**: Understand and respond to on-screen content
-
-   Example usage:
-   ```json
-   {
-     "target": "Web Browser",
-     "action": {
-       "type": "Click",
-       "target": {
-         "type": "Text",
-         "text": "Submit"
-       }
-     }
-   }
-   ```
-
-When searching for code or text patterns, prefer using search_files over grep commands for better performance and gitignore support.
-For desktop automation tasks, use the Visioneer tool which can see, understand, and interact with any application.
-
-## Tool Usage Guidelines
-
-**Multiple Tool Calls**: You can call multiple tools in a single response when tasks require several operations. For example:
-- Reading multiple files at once
-- Running a command and then reading its output
-- Searching in multiple directories
-- Any combination of tools that would help complete the task efficiently
-
-When multiple operations are independent and can be done in parallel, call all relevant tools together. Results will be displayed sequentially.
-
-**Best Practices**:
-- Use multiple tool calls when they will provide comprehensive results faster
-- Combine read operations with search operations for thorough exploration
-- Chain related commands when one operation informs another
-"#.to_string());
 
         // Add development mode warning if running from cargo
         if Self::is_running_from_cargo() {
@@ -273,17 +188,17 @@ The user will manually rebuild after exiting the application.
         // Initialize modern agent client with default options
         let agent_options = AgentOptionsBuilder::new()
             .system_prompt(&Self::build_system_prompt())
-            .model(&self.config.ai.model)
+            .model(&self.config.get_model())
             .auto_execute_tools(true)
             .max_tool_iterations(1000)
             .debug(self.debug)
             .build();
 
         self.agent_client = Some(AgentClient::new(
-            self.config.ai.provider.clone(),
-            self.config.ai.api_url.clone(),
-            self.config.ai.api_key.clone(),
-            self.config.ai.model.clone(),
+            self.config.active_provider.clone(),
+            self.config.get_api_url(),
+            self.config.get_api_key(),
+            self.config.get_model(),
             agent_options,
         ));
 
@@ -294,8 +209,12 @@ The user will manually rebuild after exiting the application.
         &self.config
     }
 
+    pub fn get_config_mut(&mut self) -> &mut Config {
+        &mut self.config
+    }
+
     pub fn set_model(&mut self, model: &str) {
-        self.config.ai.model = model.to_string();
+        self.config.set_model(model);
         let _ = self.config.save();
         // Reinitialize agent client with new model
         let _ = self.initialize_agent_client();
@@ -623,7 +542,7 @@ The user will manually rebuild after exiting the application.
 
     /// Fetch OpenRouter models asynchronously (runs in background)
     pub fn fetch_openrouter_models(&self) {
-        let api_key = self.config.ai.api_key.clone();
+        let api_key = self.config.get_api_key();
         let models_cache = self.openrouter_models.clone();
 
         // Clear existing cache first
@@ -634,11 +553,10 @@ The user will manually rebuild after exiting the application.
         // Use Handle::current to get current runtime handle
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                eprintln!("🔄 Starting OpenRouter model fetch...");
+                // Fetch models in background without debug output
                 let result = Self::fetch_openrouter_models_async(&api_key).await;
                 match result {
                     Some(models) => {
-                        eprintln!("✅ Successfully fetched {} OpenRouter models", models.len());
                         match models_cache.lock() {
                             Ok(mut cache) => {
                                 *cache = Some(models);
@@ -733,6 +651,219 @@ The user will manually rebuild after exiting the application.
         }
     }
 
+    /// Get cached OpenAI models, returning None if not cached
+    pub fn get_cached_openai_models(&self) -> Option<Vec<String>> {
+        match self.openai_models.lock() {
+            Ok(models) => models.clone(),
+            Err(e) => {
+                eprintln!("Failed to lock OpenAI models cache for reading: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cache OpenAI models
+    pub fn cache_openai_models(&self, models: Vec<String>) {
+        match self.openai_models.lock() {
+            Ok(mut models_cache) => {
+                *models_cache = Some(models);
+            }
+            Err(e) => {
+                eprintln!("Failed to lock OpenAI models cache for writing: {}", e);
+            }
+        }
+    }
+
+    /// Fetch OpenAI models asynchronously (runs in background)
+    pub fn fetch_openai_models(&self) {
+        let models_cache = self.openai_models.clone();
+        let api_key = self.config.get_api_key();
+        
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                // Fetch models in background without debug output
+                let result = Self::fetch_openai_models_async(&api_key).await;
+                match result {
+                    Some(models) => {
+                        match models_cache.lock() {
+                            Ok(mut cache) => *cache = Some(models),
+                            Err(e) => eprintln!("Failed to lock OpenAI models cache: {}", e),
+                        }
+                    }
+                    None => eprintln!("❌ Failed to fetch OpenAI models"),
+                }
+            });
+        } else {
+            eprintln!("Warning: No tokio runtime available for OpenAI model fetching");
+        }
+    }
+
+    /// Async function to fetch OpenAI models
+    async fn fetch_openai_models_async(api_key: &str) -> Option<Vec<String>> {
+        use reqwest::Client;
+        use std::time::Duration;
+
+        let client = match Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent("arula-cli/1.0")
+            .build()
+        {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!("Failed to create HTTP client: {}", e);
+                return None;
+            }
+        };
+
+        let mut request = client.get("https://api.openai.com/v1/models");
+
+        if !api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        match request.send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<Value>().await {
+                        Ok(json) => {
+                            let mut models = Vec::new();
+                            if let Some(data) = json["data"].as_array() {
+                                for model_info in data {
+                                    if let Some(id) = model_info["id"].as_str() {
+                                        // Filter for chat models (gpt-*)
+                                        if id.starts_with("gpt-") && !id.contains("-realtime-") {
+                                            models.push(id.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            models.sort();
+                            Some(models)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to parse OpenAI response: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    eprintln!("OpenAI API returned status: {}", response.status());
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to fetch OpenAI models: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get cached Anthropic models, returning None if not cached
+    pub fn get_cached_anthropic_models(&self) -> Option<Vec<String>> {
+        match self.anthropic_models.lock() {
+            Ok(models) => models.clone(),
+            Err(e) => {
+                eprintln!("Failed to lock Anthropic models cache for reading: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cache Anthropic models
+    pub fn cache_anthropic_models(&self, models: Vec<String>) {
+        match self.anthropic_models.lock() {
+            Ok(mut models_cache) => {
+                *models_cache = Some(models);
+            }
+            Err(e) => {
+                eprintln!("Failed to lock Anthropic models cache for writing: {}", e);
+            }
+        }
+    }
+
+    /// Fetch Anthropic models asynchronously (runs in background)
+    pub fn fetch_anthropic_models(&self) {
+        let models_cache = self.anthropic_models.clone();
+        let api_key = self.config.get_api_key();
+        
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                // Fetch models in background without debug output
+                let result = Self::fetch_anthropic_models_async(&api_key).await;
+                match result {
+                    Some(models) => {
+                        match models_cache.lock() {
+                            Ok(mut cache) => *cache = Some(models),
+                            Err(e) => eprintln!("Failed to lock Anthropic models cache: {}", e),
+                        }
+                    }
+                    None => eprintln!("❌ Failed to fetch Anthropic models"),
+                }
+            });
+        } else {
+            eprintln!("Warning: No tokio runtime available for Anthropic model fetching");
+        }
+    }
+
+    /// Async function to fetch Anthropic models
+    async fn fetch_anthropic_models_async(api_key: &str) -> Option<Vec<String>> {
+        // Anthropic doesn't have a public models endpoint, so return known models
+        let models = vec![
+            "claude-3-5-sonnet-20241022".to_string(),
+            "claude-3-5-haiku-20241022".to_string(),
+            "claude-3-opus-20240229".to_string(),
+            "claude-3-sonnet-20240229".to_string(),
+            "claude-3-haiku-20240307".to_string(),
+        ];
+        Some(models)
+    }
+
+    /// Get cached Ollama models, returning None if not cached
+    pub fn get_cached_ollama_models(&self) -> Option<Vec<String>> {
+        match self.ollama_models.lock() {
+            Ok(models) => models.clone(),
+            Err(e) => {
+                eprintln!("Failed to lock Ollama models cache for reading: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cache Ollama models
+    pub fn cache_ollama_models(&self, models: Vec<String>) {
+        match self.ollama_models.lock() {
+            Ok(mut models_cache) => {
+                *models_cache = Some(models);
+            }
+            Err(e) => {
+                eprintln!("Failed to lock Ollama models cache for writing: {}", e);
+            }
+        }
+    }
+
+    /// Fetch Ollama models asynchronously (runs in background)
+    pub fn fetch_ollama_models(&self) {
+        let models_cache = self.ollama_models.clone();
+        let api_url = self.config.get_api_url();
+        
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                // Fetch models in background without debug output
+                let result = Self::fetch_ollama_models_async(&api_url).await;
+                match result {
+                    Some(models) => {
+                        match models_cache.lock() {
+                            Ok(mut cache) => *cache = Some(models),
+                            Err(e) => eprintln!("Failed to lock Ollama models cache: {}", e),
+                        }
+                    }
+                    None => eprintln!("❌ Failed to fetch Ollama models"),
+                }
+            });
+        } else {
+            eprintln!("Warning: No tokio runtime available for Ollama model fetching");
+        }
+    }
+
     /// Check if the current request is cancelled
     pub fn is_cancelled(&self) -> bool {
         self.cancellation_token.is_cancelled()
@@ -765,6 +896,116 @@ The user will manually rebuild after exiting the application.
                     stderr
                 }
             ))
+        }
+    }
+
+    /// Get cached Z.AI models, returning None if not cached
+    pub fn get_cached_zai_models(&self) -> Option<Vec<String>> {
+        match self.zai_models.lock() {
+            Ok(models) => models.clone(),
+            Err(e) => {
+                eprintln!("Failed to lock Z.AI models cache for reading: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cache Z.AI models
+    pub fn cache_zai_models(&self, models: Vec<String>) {
+        match self.zai_models.lock() {
+            Ok(mut models_cache) => {
+                *models_cache = Some(models);
+            }
+            Err(e) => {
+                eprintln!("Failed to lock Z.AI models cache for writing: {}", e);
+            }
+        }
+    }
+
+    /// Fetch Z.AI models asynchronously (runs in background)
+    pub fn fetch_zai_models(&self) {
+        let models_cache = self.zai_models.clone();
+        let api_key = self.config.get_api_key();
+        
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                // Fetch models in background without debug output
+                let result = Self::fetch_zai_models_async(&api_key).await;
+                match result {
+                    Some(models) => {
+                        match models_cache.lock() {
+                            Ok(mut cache) => *cache = Some(models),
+                            Err(e) => eprintln!("Failed to lock Z.AI models cache: {}", e),
+                        }
+                    }
+                    None => eprintln!("❌ Failed to fetch Z.AI models"),
+                }
+            });
+        } else {
+            eprintln!("Warning: No tokio runtime available for Z.AI model fetching");
+        }
+    }
+
+    /// Async function to fetch Z.AI models
+    async fn fetch_zai_models_async(_api_key: &str) -> Option<Vec<String>> {
+        // Z.AI doesn't have a public models endpoint, so return known models
+        let models = vec![
+            "glm-4.6".to_string(),
+            "glm-4.5".to_string(),
+            "glm-4.5-air".to_string(),
+        ];
+        Some(models)
+    }
+
+    /// Async function to fetch Ollama models
+    async fn fetch_ollama_models_async(api_url: &str) -> Option<Vec<String>> {
+        use reqwest::Client;
+        use std::time::Duration;
+
+        let client = match Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent("arula-cli/1.0")
+            .build()
+        {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!("Failed to create HTTP client: {}", e);
+                return None;
+            }
+        };
+
+        let request = client.get(&format!("{}/api/tags", api_url));
+
+        match request.send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<Value>().await {
+                        Ok(json) => {
+                            let mut models = Vec::new();
+                            if let Some(models_data) = json["models"].as_array() {
+                                for model_info in models_data {
+                                    if let Some(name) = model_info["name"].as_str() {
+                                        models.push(name.to_string());
+                                    }
+                                }
+                            }
+                            models.sort();
+                            Some(models)
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to parse Ollama response: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    eprintln!("Ollama API returned status: {}", response.status());
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to fetch Ollama models: {}", e);
+                None
+            }
         }
     }
 
@@ -855,6 +1096,11 @@ mod tests {
             debug: false,
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
+            openrouter_models: Arc::new(Mutex::new(None)),
+            openai_models: Arc::new(Mutex::new(None)),
+            anthropic_models: Arc::new(Mutex::new(None)),
+            ollama_models: Arc::new(Mutex::new(None)),
+            zai_models: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -910,7 +1156,7 @@ mod tests {
     #[test]
     fn test_config_integration() {
         let mut config = Config::default();
-        config.ai.model = "test-model".to_string();
+        config.set_model("test-model");
 
         let app = App {
             config,
@@ -924,9 +1170,14 @@ mod tests {
             debug: true,
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
+            openrouter_models: Arc::new(Mutex::new(None)),
+            openai_models: Arc::new(Mutex::new(None)),
+            anthropic_models: Arc::new(Mutex::new(None)),
+            ollama_models: Arc::new(Mutex::new(None)),
+            zai_models: Arc::new(Mutex::new(None)),
         };
 
-        assert_eq!(app.config.ai.model, "test-model");
+        assert_eq!(app.config.get_model(), "test-model");
         assert!(app.debug);
     }
 
