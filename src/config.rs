@@ -1,13 +1,31 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub ai: AiConfig,
+    /// Currently active provider
+    pub active_provider: String,
+
+    /// Provider-specific configurations
+    pub providers: HashMap<String, ProviderConfig>,
+
+    /// Legacy field for backward compatibility (deprecated)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    pub api_key: String,
+}
+
+/// Legacy config structure for backward compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     pub provider: String,
@@ -103,7 +121,11 @@ pub enum ProviderField {
 impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+
+        // Migrate legacy config if present
+        config.migrate_legacy_config();
+
         Ok(config)
     }
 
@@ -143,27 +165,187 @@ impl Config {
         self.save_to_file(config_path)
     }
 
+    /// Migrate legacy ai config to new providers structure
+    fn migrate_legacy_config(&mut self) {
+        if let Some(legacy) = self.ai.take() {
+            // Add the legacy provider config to providers map
+            let provider_config = ProviderConfig {
+                model: legacy.model.clone(),
+                api_url: Some(legacy.api_url.clone()),
+                api_key: legacy.api_key.clone(),
+            };
+
+            self.providers.insert(legacy.provider.clone(), provider_config);
+            self.active_provider = legacy.provider;
+        }
+    }
+
+    /// Get the currently active provider configuration
+    pub fn get_active_provider_config(&self) -> Option<&ProviderConfig> {
+        self.providers.get(&self.active_provider)
+    }
+
+    /// Get mutable reference to active provider configuration
+    pub fn get_active_provider_config_mut(&mut self) -> Option<&mut ProviderConfig> {
+        self.providers.get_mut(&self.active_provider)
+    }
+
+    /// Switch to a different provider
+    pub fn switch_provider(&mut self, provider_name: &str) -> Result<()> {
+        // Create provider config if it doesn't exist
+        if !self.providers.contains_key(provider_name) {
+            let defaults = AiConfig::get_provider_defaults(provider_name);
+            self.providers.insert(
+                provider_name.to_string(),
+                ProviderConfig {
+                    model: defaults.model,
+                    api_url: Some(defaults.api_url),
+                    api_key: defaults.api_key,
+                },
+            );
+        }
+
+        self.active_provider = provider_name.to_string();
+        Ok(())
+    }
+
+    /// Get the API URL for the current provider
+    pub fn get_api_url(&self) -> String {
+        if let Some(config) = self.get_active_provider_config() {
+            if let Some(url) = &config.api_url {
+                return url.clone();
+            }
+        }
+
+        // Fallback to defaults
+        AiConfig::get_provider_defaults(&self.active_provider).api_url
+    }
+
+    /// Get current model
+    pub fn get_model(&self) -> String {
+        self.get_active_provider_config()
+            .map(|c| c.model.clone())
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    /// Set model for current provider
+    pub fn set_model(&mut self, model: &str) {
+        if let Some(config) = self.get_active_provider_config_mut() {
+            config.model = model.to_string();
+        }
+    }
+
+    /// Get current API key
+    pub fn get_api_key(&self) -> String {
+        self.get_active_provider_config()
+            .map(|c| c.api_key.clone())
+            .unwrap_or_default()
+    }
+
+    /// Set API key for current provider
+    pub fn set_api_key(&mut self, api_key: &str) {
+        if let Some(config) = self.get_active_provider_config_mut() {
+            config.api_key = api_key.to_string();
+        }
+    }
+
+    /// Get list of all configured providers
+    pub fn get_provider_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.providers.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Check if a field is editable for the current provider
+    pub fn is_field_editable(&self, field: ProviderField) -> bool {
+        match self.active_provider.to_lowercase().as_str() {
+            "custom" => true, // All fields editable for custom
+            _ => match field {
+                ProviderField::Model => true,  // Model always editable
+                ProviderField::ApiKey => true, // API key always editable
+                ProviderField::ApiUrl => false, // URL not editable for predefined providers
+            },
+        }
+    }
+
+    /// Set API URL for current provider (only works for custom providers)
+    pub fn set_api_url(&mut self, api_url: &str) {
+        if let Some(config) = self.get_active_provider_config_mut() {
+            config.api_url = Some(api_url.to_string());
+        }
+    }
+
+    /// Add or update a custom provider
+    pub fn add_custom_provider(&mut self, name: &str, model: &str, api_url: &str, api_key: &str) -> Result<()> {
+        self.providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                model: model.to_string(),
+                api_url: Some(api_url.to_string()),
+                api_key: api_key.to_string(),
+            },
+        );
+        Ok(())
+    }
+
     pub fn default() -> Self {
+        let mut providers = HashMap::new();
+
+        // Initialize with OpenAI defaults
+        let openai_defaults = AiConfig::get_provider_defaults("openai");
+        providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                model: openai_defaults.model,
+                api_url: Some(openai_defaults.api_url),
+                api_key: openai_defaults.api_key,
+            },
+        );
+
         Self {
-            ai: AiConfig::get_provider_defaults("openai"),
+            active_provider: "openai".to_string(),
+            providers,
+            ai: None,
         }
     }
 
     pub fn zai_default() -> Self {
+        let mut providers = HashMap::new();
+
+        // Initialize with Z.AI defaults
+        let zai_defaults = AiConfig::get_provider_defaults("z.ai coding plan");
+        providers.insert(
+            "z.ai coding plan".to_string(),
+            ProviderConfig {
+                model: zai_defaults.model,
+                api_url: Some(zai_defaults.api_url),
+                api_key: zai_defaults.api_key,
+            },
+        );
+
         Self {
-            ai: AiConfig::get_provider_defaults("z.ai coding plan"),
+            active_provider: "z.ai coding plan".to_string(),
+            providers,
+            ai: None,
         }
     }
 
     // Helper methods for testing
     pub fn new_for_test(provider: &str, model: &str, api_url: &str, api_key: &str) -> Self {
-        Self {
-            ai: AiConfig {
-                provider: provider.to_string(),
+        let mut providers = HashMap::new();
+        providers.insert(
+            provider.to_string(),
+            ProviderConfig {
                 model: model.to_string(),
-                api_url: api_url.to_string(),
+                api_url: Some(api_url.to_string()),
                 api_key: api_key.to_string(),
             },
+        );
+
+        Self {
+            active_provider: provider.to_string(),
+            providers,
+            ai: None,
         }
     }
 }
@@ -179,10 +361,10 @@ mod tests {
         std::env::remove_var("OPENAI_API_KEY");
         let config = Config::default();
 
-        assert_eq!(config.ai.provider, "openai");
-        assert_eq!(config.ai.model, "gpt-3.5-turbo");
-        assert_eq!(config.ai.api_url, "https://api.openai.com/v1");
-        assert_eq!(config.ai.api_key, "");
+        assert_eq!(config.active_provider, "openai");
+        assert_eq!(config.get_model(), "gpt-3.5-turbo");
+        assert_eq!(config.get_api_url(), "https://api.openai.com/v1");
+        assert_eq!(config.get_api_key(), "");
     }
 
     #[test]
@@ -190,7 +372,7 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "test-key-123");
         let config = Config::default();
 
-        assert_eq!(config.ai.api_key, "test-key-123");
+        assert_eq!(config.get_api_key(), "test-key-123");
         std::env::remove_var("OPENAI_API_KEY");
     }
 
@@ -198,10 +380,10 @@ mod tests {
     fn test_config_new_for_test() {
         let config = Config::new_for_test("anthropic", "claude-3", "https://api.anthropic.com", "test-key");
 
-        assert_eq!(config.ai.provider, "anthropic");
-        assert_eq!(config.ai.model, "claude-3");
-        assert_eq!(config.ai.api_url, "https://api.anthropic.com");
-        assert_eq!(config.ai.api_key, "test-key");
+        assert_eq!(config.active_provider, "anthropic");
+        assert_eq!(config.get_model(), "claude-3");
+        assert_eq!(config.get_api_url(), "https://api.anthropic.com");
+        assert_eq!(config.get_api_key(), "test-key");
     }
 
     #[test]
@@ -227,10 +409,10 @@ mod tests {
         let loaded_config = Config::load_from_file(&config_path)?;
 
         // Verify the loaded config matches the original
-        assert_eq!(loaded_config.ai.provider, original_config.ai.provider);
-        assert_eq!(loaded_config.ai.model, original_config.ai.model);
-        assert_eq!(loaded_config.ai.api_url, original_config.ai.api_url);
-        assert_eq!(loaded_config.ai.api_key, original_config.ai.api_key);
+        assert_eq!(loaded_config.active_provider, original_config.active_provider);
+        assert_eq!(loaded_config.get_model(), original_config.get_model());
+        assert_eq!(loaded_config.get_api_url(), original_config.get_api_url());
+        assert_eq!(loaded_config.get_api_key(), original_config.get_api_key());
 
         Ok(())
     }
@@ -310,10 +492,10 @@ mod tests {
         // Load using load_or_default
         let loaded_config = Config::load_or_default()?;
 
-        assert_eq!(loaded_config.ai.provider, "custom");
-        assert_eq!(loaded_config.ai.model, "custom-model");
-        assert_eq!(loaded_config.ai.api_url, "custom-url");
-        assert_eq!(loaded_config.ai.api_key, "custom-key");
+        assert_eq!(loaded_config.active_provider, "custom");
+        assert_eq!(loaded_config.get_model(), "custom-model");
+        assert_eq!(loaded_config.get_api_url(), "custom-url");
+        assert_eq!(loaded_config.get_api_key(), "custom-key");
 
         std::env::remove_var("HOME");
         Ok(())
@@ -330,10 +512,10 @@ mod tests {
         let config = Config::load_or_default()?;
 
         // Should return default config
-        assert_eq!(config.ai.provider, "openai");
-        assert_eq!(config.ai.model, "gpt-3.5-turbo");
-        assert_eq!(config.ai.api_url, "https://api.openai.com/v1");
-        assert_eq!(config.ai.api_key, "");
+        assert_eq!(config.active_provider, "openai");
+        assert_eq!(config.get_model(), "gpt-3.5-turbo");
+        assert_eq!(config.get_api_url(), "https://api.openai.com/v1");
+        assert_eq!(config.get_api_key(), "");
 
         std::env::remove_var("HOME");
         Ok(())
@@ -354,10 +536,10 @@ mod tests {
         // Deserialize from YAML
         let deserialized: Config = serde_yaml::from_str(&yaml)?;
 
-        assert_eq!(original.ai.provider, deserialized.ai.provider);
-        assert_eq!(original.ai.model, deserialized.ai.model);
-        assert_eq!(original.ai.api_url, deserialized.ai.api_url);
-        assert_eq!(original.ai.api_key, deserialized.ai.api_key);
+        assert_eq!(original.active_provider, deserialized.active_provider);
+        assert_eq!(original.get_model(), deserialized.get_model());
+        assert_eq!(original.get_api_url(), deserialized.get_api_url());
+        assert_eq!(original.get_api_key(), deserialized.get_api_key());
 
         Ok(())
     }
@@ -377,10 +559,10 @@ mod tests {
         // Deserialize from JSON
         let deserialized: Config = serde_json::from_str(&json)?;
 
-        assert_eq!(config.ai.provider, deserialized.ai.provider);
-        assert_eq!(config.ai.model, deserialized.ai.model);
-        assert_eq!(config.ai.api_url, deserialized.ai.api_url);
-        assert_eq!(config.ai.api_key, deserialized.ai.api_key);
+        assert_eq!(config.active_provider, deserialized.active_provider);
+        assert_eq!(config.get_model(), deserialized.get_model());
+        assert_eq!(config.get_api_url(), deserialized.get_api_url());
+        assert_eq!(config.get_api_key(), deserialized.get_api_key());
 
         Ok(())
     }
@@ -405,14 +587,156 @@ mod tests {
         let config1 = Config::new_for_test("clone-test", "clone-model", "clone-url", "clone-key");
         let config2 = config1.clone();
 
-        assert_eq!(config1.ai.provider, config2.ai.provider);
-        assert_eq!(config1.ai.model, config2.ai.model);
-        assert_eq!(config1.ai.api_url, config2.ai.api_url);
-        assert_eq!(config1.ai.api_key, config2.ai.api_key);
+        assert_eq!(config1.active_provider, config2.active_provider);
+        assert_eq!(config1.get_model(), config2.get_model());
+        assert_eq!(config1.get_api_url(), config2.get_api_url());
+        assert_eq!(config1.get_api_key(), config2.get_api_key());
 
         // Ensure they're independent
         let config3 = Config::new_for_test("different", "different", "different", "different");
-        assert_ne!(config1.ai.provider, config3.ai.provider);
+        assert_ne!(config1.active_provider, config3.active_provider);
+    }
+
+    #[test]
+    fn test_provider_switching() -> Result<()> {
+        let mut config = Config::default();
+
+        // Initially on OpenAI
+        assert_eq!(config.active_provider, "openai");
+
+        // Switch to Anthropic
+        config.switch_provider("anthropic")?;
+        assert_eq!(config.active_provider, "anthropic");
+        assert_eq!(config.get_model(), "claude-3-sonnet-20240229");
+
+        // OpenAI config should be preserved
+        config.switch_provider("openai")?;
+        assert_eq!(config.active_provider, "openai");
+        assert_eq!(config.get_model(), "gpt-3.5-turbo");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_provider_config_persistence() -> Result<()> {
+        let mut config = Config::default();
+
+        // Configure OpenAI
+        config.set_model("gpt-4");
+        config.set_api_key("openai-key-123");
+
+        // Switch to Anthropic and configure
+        config.switch_provider("anthropic")?;
+        config.set_model("claude-3-opus");
+        config.set_api_key("anthropic-key-456");
+
+        // Switch back to OpenAI - config should be preserved
+        config.switch_provider("openai")?;
+        assert_eq!(config.get_model(), "gpt-4");
+        assert_eq!(config.get_api_key(), "openai-key-123");
+
+        // Switch back to Anthropic - config should be preserved
+        config.switch_provider("anthropic")?;
+        assert_eq!(config.get_model(), "claude-3-opus");
+        assert_eq!(config.get_api_key(), "anthropic-key-456");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_config_migration() -> Result<()> {
+        use tempfile::NamedTempFile;
+
+        // Create a legacy config YAML
+        let legacy_yaml = r#"
+ai:
+  provider: "openai"
+  model: "gpt-4"
+  api_url: "https://api.openai.com/v1"
+  api_key: "legacy-key-123"
+"#;
+
+        let temp_file = NamedTempFile::new()?;
+        fs::write(temp_file.path(), legacy_yaml)?;
+
+        // Load the legacy config
+        let config = Config::load_from_file(temp_file.path())?;
+
+        // Verify migration worked
+        assert_eq!(config.active_provider, "openai");
+        assert_eq!(config.get_model(), "gpt-4");
+        assert_eq!(config.get_api_url(), "https://api.openai.com/v1");
+        assert_eq!(config.get_api_key(), "legacy-key-123");
+
+        // Verify the ai field is now None (migrated)
+        assert!(config.ai.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_provider_names() {
+        let mut config = Config::default();
+
+        // Add multiple providers
+        let _ = config.switch_provider("openai");
+        let _ = config.switch_provider("anthropic");
+        let _ = config.switch_provider("ollama");
+
+        let providers = config.get_provider_names();
+
+        // Should have all three providers
+        assert!(providers.contains(&"openai".to_string()));
+        assert!(providers.contains(&"anthropic".to_string()));
+        assert!(providers.contains(&"ollama".to_string()));
+        assert_eq!(providers.len(), 3);
+    }
+
+    #[test]
+    fn test_multi_provider_save_load() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("multi_config.yaml");
+
+        // Create config with multiple providers
+        let mut config = Config::default();
+        config.switch_provider("openai")?;
+        config.set_model("gpt-4");
+        config.set_api_key("openai-key");
+
+        config.switch_provider("anthropic")?;
+        config.set_model("claude-3-opus");
+        config.set_api_key("anthropic-key");
+
+        config.switch_provider("ollama")?;
+        config.set_model("llama3");
+        config.set_api_key("");
+
+        // Set active provider back to OpenAI
+        config.switch_provider("openai")?;
+
+        // Save
+        config.save_to_file(&config_path)?;
+
+        // Load
+        let loaded = Config::load_from_file(&config_path)?;
+
+        // Verify active provider
+        assert_eq!(loaded.active_provider, "openai");
+        assert_eq!(loaded.get_model(), "gpt-4");
+
+        // Verify all providers are present
+        assert_eq!(loaded.get_provider_names().len(), 3);
+
+        // Check each provider's settings
+        let mut loaded_config = loaded;
+        loaded_config.switch_provider("anthropic")?;
+        assert_eq!(loaded_config.get_model(), "claude-3-opus");
+        assert_eq!(loaded_config.get_api_key(), "anthropic-key");
+
+        loaded_config.switch_provider("ollama")?;
+        assert_eq!(loaded_config.get_model(), "llama3");
+
+        Ok(())
     }
 
     #[test]
@@ -430,22 +754,22 @@ mod tests {
     fn test_edge_cases() -> Result<()> {
         // Test with empty strings
         let empty_config = Config::new_for_test("", "", "", "");
-        assert_eq!(empty_config.ai.provider, "");
-        assert_eq!(empty_config.ai.model, "");
-        assert_eq!(empty_config.ai.api_url, "");
-        assert_eq!(empty_config.ai.api_key, "");
+        assert_eq!(empty_config.active_provider, "");
+        assert_eq!(empty_config.get_model(), "");
+        assert_eq!(empty_config.get_api_url(), "");
+        assert_eq!(empty_config.get_api_key(), "");
 
         // Test with very long strings
         let long_string = "a".repeat(1000);
         let long_config = Config::new_for_test(&long_string, &long_string, &long_string, &long_string);
-        assert_eq!(long_config.ai.provider.len(), 1000);
-        assert_eq!(long_config.ai.model.len(), 1000);
+        assert_eq!(long_config.active_provider.len(), 1000);
+        assert_eq!(long_config.get_model().len(), 1000);
 
         // Should be able to save and load the long config
         let temp_file = NamedTempFile::new().unwrap();
         long_config.save_to_file(temp_file.path())?;
         let loaded_config = Config::load_from_file(temp_file.path())?;
-        assert_eq!(loaded_config.ai.provider.len(), 1000);
+        assert_eq!(loaded_config.active_provider.len(), 1000);
 
         Ok(())
     }
