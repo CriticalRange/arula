@@ -41,7 +41,8 @@ mod colors;
 mod config;
 mod custom_spinner;
 mod input_handler;
-mod modern_input;
+mod reedline_input;
+mod reedline_menu;
 mod output;
 mod overlay_menu;
 mod tool_call;
@@ -51,7 +52,7 @@ mod tools;
 use app::App;
 use output::OutputHandler;
 use overlay_menu::OverlayMenu;
-use tool_progress::PersistentInput;
+use reedline_input::{ReedlineInput, AiState};
 
 /// Properly exit the application with terminal cleanup
 fn graceful_exit() -> ! {
@@ -279,79 +280,30 @@ async fn main() -> Result<()> {
     print_changelog()?;
     println!();
 
-    // NOW enable raw mode for keyboard input detection
-    enable_raw_mode()?;
-
-    // Set cursor to be visible and use steady bar style
-    setup_bar_cursor()?;
-
-    // Create input handler with prompt
-    let prompt = if cfg!(windows) { "▶" } else { "▶" };
-    let mut input_handler = input_handler::InputHandler::new(prompt);
+    // Create reedline input handler (no raw mode needed - reedline handles it)
+    let mut reedline_input = ReedlineInput::new()?;
     let mut custom_spinner = custom_spinner::CustomSpinner::new();
 
-    // Create overlay menu
+    // Create overlay menu (for settings dialogs)
     let mut menu = OverlayMenu::new();
 
-    // Create persistent input for typing during AI response
-    let mut persistent_input = PersistentInput::new();
-    let mut buffered_input = String::new(); // Input typed during AI response
+    // Session ID for prompt
+    let session_id = format!("{:x}", fastrand::u32(..));
+    reedline_input.set_session_id(session_id);
+
+    // Set initial AI state
+    reedline_input.set_ai_state(AiState::Ready);
 
     // Main event loop
     'main_loop: loop {
-        // If AI is processing, check for responses and allow typing
+        // If AI is processing, handle responses
         if app.is_waiting_for_response() {
-            // Handle AI responses while allowing user input
-            let _spinner_running = false;
+            // Update prompt to show waiting state
+            reedline_input.set_ai_state(AiState::Waiting);
+
             while app.is_waiting_for_response() {
-                // Check for keyboard input (non-blocking)
-                if event::poll(std::time::Duration::from_millis(10))? {
-                    if let Event::Key(key_event) = event::read()? {
-                        if key_event.kind == KeyEventKind::Press {
-                            match key_event.code {
-                                crossterm::event::KeyCode::Esc => {
-                                    // ESC pressed, cancel AI request
-                                    custom_spinner.stop();
-                                    output.print_system("🛑 Request cancelled (ESC pressed)")?;
-                                    app.cancel_request();
-                                    break;
-                                }
-                                crossterm::event::KeyCode::Char(c) => {
-                                    // Buffer input while AI is responding
-                                    persistent_input.insert_char(c);
-                                    persistent_input.render()?;
-                                }
-                                crossterm::event::KeyCode::Backspace => {
-                                    persistent_input.backspace();
-                                    persistent_input.render()?;
-                                }
-                                crossterm::event::KeyCode::Enter => {
-                                    // Queue the input for processing after AI finishes
-                                    if !persistent_input.get_input().is_empty() {
-                                        buffered_input = persistent_input.take();
-                                        // Clear the input line visually
-                                        execute!(
-                                            std::io::stdout(),
-                                            cursor::MoveToColumn(0),
-                                            terminal::Clear(terminal::ClearType::CurrentLine)
-                                        )?;
-                                        print!("{} ", console::style("▶").cyan());
-                                        std::io::stdout().flush()?;
-                                    }
-                                }
-                                crossterm::event::KeyCode::Left => {
-                                    persistent_input.move_left();
-                                    persistent_input.render()?;
-                                }
-                                crossterm::event::KeyCode::Right => {
-                                    persistent_input.move_right();
-                                    persistent_input.render()?;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
+                // Poll for AI responses (non-blocking with short timeout)
+                std::thread::sleep(std::time::Duration::from_millis(10));
 
                 match app.check_ai_response_nonblocking() {
                     Some(response) => {
@@ -430,30 +382,22 @@ async fn main() -> Result<()> {
                                 custom_spinner.start_above("Processing results...")?;
                             }
                             app::AiResponse::AgentStreamEnd => {
-                                // Stop spinner cleanly (it clears its own line)
+                                // Stop spinner cleanly
                                 custom_spinner.stop();
                                 output.stop_spinner();
 
                                 // Finish the AI message line
                                 output.end_line()?;
                                 output.print_context_usage(None)?;
-                                
+
                                 // Clear accumulated text to reset state for next response
                                 output.clear_accumulated_text();
 
-                                // Add exactly ONE blank line after AI response
+                                // Add blank line after AI response
                                 println!();
 
-                                // Transfer any typed input to the input handler
-                                let typed_input = persistent_input.get_input().to_string();
-                                persistent_input.clear();
-                                if !typed_input.is_empty() {
-                                    input_handler.set_input(&typed_input);
-                                }
-
-                                // Set up persistent input prompt for next message
-                                print!("{} ", console::style("▶").cyan());
-                                std::io::stdout().flush()?;
+                                // Reset AI state to ready for next input
+                                reedline_input.set_ai_state(AiState::Ready);
 
                                 break; // Exit the AI response loop
                             }
@@ -468,131 +412,100 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Process buffered input if any
-            if !buffered_input.is_empty() {
-                let input = std::mem::take(&mut buffered_input);
-                input_handler.add_to_history(input.clone());
-                match app.send_to_ai(&input).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        output.print_error(&format!("Failed to send to AI: {}", e))?;
-                    }
-                }
-                continue 'main_loop;
-            }
-
             continue; // Continue to next iteration to get input
         }
 
-        // Draw initial prompt
-        input_handler.draw()?;
+        // Update AI state in prompt
+        reedline_input.set_ai_state(AiState::Ready);
 
-        // Input handling loop
-        loop {
-            if event::poll(std::time::Duration::from_millis(100))? {
-                if let Event::Key(key_event) = event::read()? {
-                    if key_event.kind == KeyEventKind::Press {
-                        match input_handler.handle_key(key_event)? {
-                            Some(input) => {
-                                // Handle special commands
-                                if input == "__CTRL_C__" {
-                                    // Ctrl+C pressed - show exit confirmation
-                                    if menu.show_exit_confirmation(&mut output)? {
-                                        output.print_system("Goodbye! 👋")?;
-                                        graceful_exit();
-                                    }
-                                    input_handler.clear()?;
-                                    input_handler.draw()?;
-                                    continue 'main_loop;
-                                } else if input == "__CTRL_D__" {
-                                    // Ctrl+D - EOF (no message here, handled at end)
-                                    break;
-                                } else if input == "__ESC__" {
-                                    // ESC pressed, continue
-                                    input_handler.clear()?;
-                                    input_handler.draw()?;
-                                    continue 'main_loop;
-                                } else if input == "m" || input == "menu" {
-                                    // Menu shortcut
-                                    if menu.show_main_menu(&mut app, &mut output)? {
-                                        output.print_system("Goodbye! 👋")?;
-                                        graceful_exit();
-                                    }
-                                    input_handler.clear()?;
-                                    input_handler.draw()?;
-                                    continue 'main_loop;
-                                } else if input.starts_with('/') {
-                                    // Handle CLI commands
-                                    handle_cli_command(&input, &mut app, &mut output, &mut menu).await?;
-                                    input_handler.clear()?;
-                                    input_handler.draw()?;
-                                    continue 'main_loop;
-                                } else {
-                                    // Handle empty input
-                                    if input.trim().is_empty() {
-                                        input_handler.clear()?;
-                                        input_handler.draw()?;
-                                        continue;
-                                    }
+        // Get input from reedline
+        match reedline_input.read_line()? {
+            Some(input) => {
+                // Handle special signals from reedline
+                if input == "__ESC__" {
+                    // Single ESC - cancel AI request if running, otherwise just clear
+                    if app.is_waiting_for_response() {
+                        custom_spinner.stop();
+                        output.print_system("🛑 Request cancelled (ESC pressed)")?;
+                        app.cancel_request();
+                    }
+                    continue 'main_loop;
+                }
 
-                                    // Add to history
-                                    input_handler.add_to_history(input.clone());
+                if input == "__SHOW_MENU__" {
+                    // Double ESC - show menu
+                    if menu.show_main_menu(&mut app, &mut output)? {
+                        output.print_system("Goodbye! 👋")?;
+                        graceful_exit();
+                    }
+                    continue 'main_loop;
+                }
 
-                                    // Handle exit commands
-                                    if input == "exit" || input == "quit" {
-                                        if menu.show_exit_confirmation(&mut output)? {
-                                            output.print_system("Goodbye! 👋")?;
-                                            graceful_exit();
-                                        }
-                                        input_handler.clear()?;
-                                        input_handler.draw()?;
-                                        continue 'main_loop;
-                                    }
+                // Handle Ctrl+D (EOF)
+                if input.is_empty() {
+                    output.print_system("Goodbye! 👋")?;
+                    break 'main_loop;
+                }
 
-                                    // Move to next line after user's input (which is already visible from input_handler)
-                                    println!();
+                // Handle exit commands
+                if input == "exit" || input == "quit" {
+                    if menu.show_exit_confirmation(&mut output)? {
+                        output.print_system("Goodbye! 👋")?;
+                        graceful_exit();
+                    }
+                    continue 'main_loop;
+                }
 
-                                    // Send to AI
-                                    if cli.verbose {
-                                        output.print_system(&format!("DEBUG: About to call app.send_to_ai with input: '{}'", input))?;
-                                    }
-                                    match app.send_to_ai(&input).await {
-                                        Ok(()) => {
-                                            // AI request sent successfully
-                                            if cli.verbose {
-                                                output.print_system("DEBUG: AI request sent successfully")?;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            // Handle AI client errors gracefully
-                                            if cli.verbose {
-                                                output.print_system(&format!("DEBUG: AI send failed with error: {}", e))?;
-                                            }
-                                            if e.to_string().contains("AI client not initialized") {
-                                                output.print_error("AI client not configured. Use /config to set up AI settings.")?;
-                                                output.print_system("💡 Try: /config or press 'm' for the configuration menu")?;
-                                            } else {
-                                                output.print_error(&format!("Failed to send to AI: {}", e))?;
-                                            }
-                                        }
-                                    }
+                // Handle menu shortcuts
+                if input == "m" || input == "menu" {
+                    if menu.show_main_menu(&mut app, &mut output)? {
+                        output.print_system("Goodbye! 👋")?;
+                        graceful_exit();
+                    }
+                    continue 'main_loop;
+                }
 
-                                    // Clear input handler buffer (don't redraw, we'll set up our own layout)
-                                    input_handler.set_input("");
+                // Handle CLI commands (starting with /)
+                if input.starts_with('/') {
+                    handle_cli_command(&input, &mut app, &mut output, &mut menu).await?;
+                    continue 'main_loop;
+                }
 
-                                    break; // Exit input loop to go to AI response handling
-                                }
-                            }
-                            None => {
-                                // Continue handling input
-                                input_handler.draw()?;
-                            }
+                // Move to next line after user's input
+                println!();
+
+                // Update prompt to "thinking" state
+                reedline_input.set_ai_state(AiState::Thinking);
+
+                // Send to AI
+                if cli.verbose {
+                    output.print_system(&format!("DEBUG: Sending to AI: '{}'", input))?;
+                }
+                match app.send_to_ai(&input).await {
+                    Ok(()) => {
+                        // AI request sent successfully
+                        if cli.verbose {
+                            output.print_system("DEBUG: AI request sent successfully")?;
+                        }
+                    }
+                    Err(e) => {
+                        // Handle AI client errors gracefully
+                        if cli.verbose {
+                            output.print_system(&format!("DEBUG: AI send failed with error: {}", e))?;
+                        }
+                        if e.to_string().contains("AI client not initialized") {
+                            output.print_error("AI client not configured. Use /config to set up AI settings.")?;
+                            output.print_system("💡 Try: /config or press 'm' for the configuration menu")?;
+                        } else {
+                            output.print_error(&format!("Failed to send to AI: {}", e))?;
                         }
                     }
                 }
-            } else {
-                // No event, continue
-                continue;
+            }
+            None => {
+                // Ctrl+D - exit gracefully
+                output.print_system("Goodbye! 👋")?;
+                break 'main_loop;
             }
         }
     }

@@ -6,7 +6,8 @@ authors = ["ARULA CLI Team"]
 description = "Autonomous AI CLI with native terminal chat interface"
 
 [dependencies]
-rustyline = "14.0"
+reedline = "0.37"
+nu-ansi-term = "0.50"
 console = "0.15"
 crossterm = "0.28"
 serde = { version = "1.0", features = ["derive"] }
