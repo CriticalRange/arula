@@ -344,32 +344,27 @@ async fn main() -> Result<()> {
                                 if custom_spinner.is_running() {
                                     custom_spinner.stop();
                                 }
-                                custom_spinner.start_above("AI is thinking...")?;
+                                // Move to beginning of current line and clear it (contains user's input)
+                                execute!(
+                                    std::io::stdout(),
+                                    cursor::MoveToColumn(0),
+                                    terminal::Clear(terminal::ClearType::CurrentLine)
+                                )?;
+                                std::io::stdout().flush()?;
+                                // Start AI message output without prefix
                                 output.start_ai_message()?;
                             }
                             app::AiResponse::AgentStreamText(text) => {
                                 // Always stop spinner first if running
                                 if custom_spinner.is_running() {
                                     custom_spinner.stop();
-                                    // Just clear the current line (where spinner was), don't move up
-                                    execute!(
-                                        std::io::stdout(),
-                                        cursor::MoveToColumn(0),
-                                        terminal::Clear(terminal::ClearType::CurrentLine)
-                                    )?;
-                                    print!(" "); // Indent for AI response
+                                    // The spinner.stop() already clears its line, no need for additional clearing
                                     std::io::stdout().flush()?;
                                 }
 
-                                // Print the chunk
+                                // Print the chunk without starting spinner immediately
+                                // Note: print_streaming_chunk handles its own spinner logic
                                 output.print_streaming_chunk(&text)?;
-
-                                // Set up for next chunk: end text line, spinner line, input prompt
-                                println!(); // End current text line
-                                println!(); // Line for spinner
-                                print!("{} ", console::style("▶").cyan());
-                                std::io::stdout().flush()?;
-                                custom_spinner.start_above("Generating response...")?;
                             }
                             app::AiResponse::AgentToolCall {
                                 id: _,
@@ -385,7 +380,6 @@ async fn main() -> Result<()> {
                                 )?;
                                 output.start_tool_execution(&name, &arguments)?;
                                 // Set up spinner above input prompt
-                                println!(); // Line for spinner
                                 print!("{} ", console::style("▶").cyan());
                                 std::io::stdout().flush()?;
                                 custom_spinner.start_above(&format!("Executing tool: {}", name))?;
@@ -415,7 +409,6 @@ async fn main() -> Result<()> {
                                 }
 
                                 // Restore spinner above input prompt
-                                println!(); // Line for spinner
                                 print!("{} ", console::style("▶").cyan());
                                 std::io::stdout().flush()?;
                                 custom_spinner.start_above("Processing results...")?;
@@ -425,16 +418,12 @@ async fn main() -> Result<()> {
                                 custom_spinner.stop();
                                 output.stop_spinner();
 
-                                // Just clear current line
-                                execute!(
-                                    std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine)
-                                )?;
-
                                 // Finish the AI message line
                                 output.end_line()?;
                                 output.print_context_usage(None)?;
+                                
+                                // Clear accumulated text to reset state for next response
+                                output.clear_accumulated_text();
 
                                 // Add exactly ONE blank line after AI response
                                 println!();
@@ -446,13 +435,18 @@ async fn main() -> Result<()> {
                                     input_handler.set_input(&typed_input);
                                 }
 
+                                // Set up persistent input prompt for next message
+                                print!("{} ", console::style("▶").cyan());
+                                std::io::stdout().flush()?;
+
                                 break; // Exit the AI response loop
                             }
                         }
                     }
                     None => {
+                        // Start spinner immediately if not running
                         if !custom_spinner.is_running() {
-                            custom_spinner.start_above("")?;
+                            custom_spinner.start_above("Generating response...")?;
                         }
                     }
                 }
@@ -569,10 +563,6 @@ async fn main() -> Result<()> {
 
                                     // Clear input handler buffer (don't redraw, we'll set up our own layout)
                                     input_handler.set_input("");
-
-                                    // Set up persistent input prompt for typing during AI response
-                                    print!("{} ", console::style("▶").cyan());
-                                    std::io::stdout().flush()?;
 
                                     break; // Exit input loop to go to AI response handling
                                 }

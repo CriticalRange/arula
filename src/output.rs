@@ -135,7 +135,7 @@ mod animations {
 /// Debug print helper that checks ARULA_DEBUG environment variable
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").is_ok() {
-        eprintln!("{}", msg);
+        println!("🔧 DEBUG: {}", msg);
     }
 }
 
@@ -227,15 +227,21 @@ impl OutputHandler {
         self.debug
     }
 
+    pub fn has_accumulated_text(&self) -> bool {
+        !self.accumulated_text.is_empty()
+    }
+
+    pub fn clear_accumulated_text(&mut self) {
+        self.accumulated_text.clear();
+    }
+
     pub fn print_user_message(&mut self, content: &str) -> io::Result<()> {
         println!("{}", helpers::user_message().apply_to(content));
         Ok(())
     }
 
     pub fn print_ai_message(&mut self, content: &str) -> io::Result<()> {
-        println!();
         println!("{} {}", helpers::ai_response().apply_to("▶ ARULA:"), content);
-        println!();
         Ok(())
     }
 
@@ -301,10 +307,16 @@ impl OutputHandler {
             helpers::tool_call().apply_to(format!("🛠️  {}", formatted_name))
         };
 
-        // Compact single-line display with tool name and truncated input
+        // Show full arguments in debug mode, truncated in normal mode
         if !input.is_empty() {
-            let truncated_args = self.smart_truncate(input, 60);
-            println!("{} · {}", tool_display, ColorTheme::dim().apply_to(truncated_args));
+            if self.debug {
+                // Debug mode: show full arguments
+                println!("{} · {}", tool_display, ColorTheme::dim().apply_to(input));
+            } else {
+                // Normal mode: show truncated arguments
+                let truncated_args = self.smart_truncate(input, 60);
+                println!("{} · {}", tool_display, ColorTheme::dim().apply_to(truncated_args));
+            }
         } else {
             println!("{}", tool_display);
         }
@@ -337,10 +349,17 @@ impl OutputHandler {
             helpers::tool_call().apply_to(format!("🛠️  {}", formatted_name))
         };
 
-        // Compact single-line display
+        // More concise display for non-debug mode
+        // Show full arguments in debug mode, truncated in normal mode
         if !args.is_empty() {
-            let truncated_args = self.smart_truncate(args, 60);
-            println!("{} · {}", tool_display, ColorTheme::dim().apply_to(truncated_args));
+            if self.debug {
+                // Debug mode: show full arguments
+                println!("{} · {}", tool_display, ColorTheme::dim().apply_to(args));
+            } else {
+                // Normal mode: show even more truncated args
+                let truncated_args = self.smart_truncate(args, 30);
+                println!("{} · {}", tool_display, ColorTheme::dim().apply_to(truncated_args));
+            }
         } else {
             println!("{}", tool_display);
         }
@@ -425,7 +444,6 @@ impl OutputHandler {
             "{}",
             ColorTheme::border().apply_to("└─────────────────────────────────────")
         );
-        println!();
         Ok(())
     }
 
@@ -445,7 +463,7 @@ impl OutputHandler {
             print!("  {}", status_icon);
         }
 
-        // Show full result without truncation
+        // For non-debug mode, be more concise
         if !result.is_empty() {
             let line_count = result.lines().count();
             let char_count = result.len();
@@ -457,35 +475,27 @@ impl OutputHandler {
                                  result.contains("unchanged") ||
                                  result.contains("Summary:");
 
-            if line_count == 1 && !is_colored_diff {
-                // Single line result - show it inline
-                println!(" · {}", style(result).dim());
+            // Always show edit_file diffs fully (edit tool stays intact)
+            if is_colored_diff {
+                println!(" · File changes:");
+                println!();
+                // For colored diffs, print directly to preserve all ANSI formatting
+                print!("{}", result);
+            } else if line_count == 1 {
+                // Single line result - show it inline if short
+                let line = result.lines().next().unwrap_or("");
+                if line.len() <= 80 {
+                    println!(" · {}", style(line).dim());
+                } else {
+                    println!(" · {} chars", style(char_count).dim());
+                }
             } else {
-                // Multi-line result - show count and then full content
+                // Multi-line result - just show count, not full content
                 println!(
                     " · {} lines, {} chars",
                     style(line_count).cyan(),
                     style(char_count).dim()
                 );
-
-                // Show full result content
-                if is_colored_diff {
-                    // For colored diffs, print directly to preserve all ANSI formatting
-                    println!();
-                    print!("{}", result);
-                } else {
-                    // For regular content, use normal formatting
-                    for line in result.lines() {
-                        // Check if line contains ANSI escape codes
-                        if line.contains("\u{1b}[") {
-                            // Print directly to preserve ANSI colors
-                            println!("  {}", line);
-                        } else {
-                            // Apply styling for plain text
-                            println!("  {}", style(line).dim());
-                        }
-                    }
-                }
             }
         } else {
             println!();
@@ -540,17 +550,17 @@ impl OutputHandler {
     }
 
     pub fn print_streaming_chunk(&mut self, chunk: &str) -> io::Result<()> {
-        // Stop spinner if active to print the chunk
-        if self.spinner.is_some() {
-            self.stop_spinner();
-            print!("\r\x1b[K"); // Clear the spinner line
-        }
+        // Note: The main spinner is handled by custom_spinner in main.rs
+        // Don't interfere with it here - let main.rs handle spinner lifecycle
 
         // Accumulate text for potential re-rendering
         self.accumulated_text.push_str(chunk);
 
-        // Print the chunk with inline markdown rendering
-        self.print_markdown_inline(chunk)?;
+        // Add 1-space padding on the left side for depth (no trailing space)
+        let padded_chunk = format!(" {}", chunk);
+
+        // Print the chunk with inline markdown rendering and padding
+        self.print_markdown_inline(&padded_chunk)?;
 
         Ok(())
     }
@@ -882,8 +892,8 @@ impl OutputHandler {
                 let footnote_text = trimmed[(close_bracket + 2)..].trim();
                 print!(
                     "{} {}",
-                    style(footnote_ref).cyan().bold(),
-                    style(footnote_text).dim()
+                    style(footnote_ref).cyan().bold().to_string(),
+                    style(footnote_text).dim().to_string()
                 );
                 return Ok(());
             }
@@ -930,7 +940,7 @@ impl OutputHandler {
                 if let Some(close_pos) = find_closing_pattern(&chars[(i + 2)..], "~~") {
                     let close_idx = i + 2 + close_pos;
                     let strikethrough: String = chars[(i + 2)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", style(strikethrough).dim().strikethrough()));
+                    result.push_str(&style(strikethrough).dim().strikethrough().to_string());
                     i = close_idx + 2;
                     continue;
                 }
@@ -941,7 +951,7 @@ impl OutputHandler {
                 if let Some(close_pos) = find_closing_pattern(&chars[(i + 2)..], "**") {
                     let close_idx = i + 2 + close_pos;
                     let bold: String = chars[(i + 2)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", style(bold).yellow().bold()));
+                    result.push_str(&style(bold).yellow().bold().to_string());
                     i = close_idx + 2;
                     continue;
                 }
@@ -949,7 +959,7 @@ impl OutputHandler {
                 if let Some(close_pos) = find_closing_pattern(&chars[(i + 2)..], "__") {
                     let close_idx = i + 2 + close_pos;
                     let bold: String = chars[(i + 2)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", style(bold).yellow().bold()));
+                    result.push_str(&style(bold).yellow().bold().to_string());
                     i = close_idx + 2;
                     continue;
                 }
@@ -960,7 +970,7 @@ impl OutputHandler {
                 if let Some(close_pos) = chars[(i + 1)..].iter().position(|&c| c == '`') {
                     let close_idx = i + 1 + close_pos;
                     let code: String = chars[(i + 1)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", helpers::inline_code().apply_to(code)));
+                    result.push_str(&helpers::inline_code().apply_to(code).to_string());
                     i = close_idx + 1;
                     continue;
                 }
@@ -971,7 +981,7 @@ impl OutputHandler {
                 if let Some(close_pos) = chars[(i + 1)..].iter().position(|&c| c == '*') {
                     let close_idx = i + 1 + close_pos;
                     let italic: String = chars[(i + 1)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", style(italic).cyan()));
+                    result.push_str(&style(italic).cyan().to_string());
                     i = close_idx + 1;
                     continue;
                 }
@@ -979,7 +989,7 @@ impl OutputHandler {
                 if let Some(close_pos) = chars[(i + 1)..].iter().position(|&c| c == '_') {
                     let close_idx = i + 1 + close_pos;
                     let italic: String = chars[(i + 1)..close_idx].iter().collect();
-                    result.push_str(&format!("{}", style(italic).cyan()));
+                    result.push_str(&style(italic).cyan().to_string());
                     i = close_idx + 1;
                     continue;
                 }
@@ -1010,8 +1020,8 @@ impl OutputHandler {
                             let url: String = chars[(text_end + 2)..url_end].iter().collect();
                             result.push_str(&format!(
                                 "{} {}",
-                                style(link_text).blue().underlined(),
-                                style(format!("({})", url)).dim()
+                                style(link_text).blue().underlined().to_string(),
+                                style(format!("({})", url)).dim().to_string()
                             ));
                             i = url_end + 1;
                             continue;
@@ -1019,7 +1029,7 @@ impl OutputHandler {
                     }
 
                     // Just show link text if no URL found
-                    result.push_str(&format!("{}", style(link_text).blue().underlined()));
+                    result.push_str(&style(link_text).blue().underlined().to_string());
                     i = text_end + 1;
                     continue;
                 }
@@ -1087,15 +1097,15 @@ impl OutputHandler {
 
         // Apply styling based on tag
         let rendered = match tag_name.as_str() {
-            "mark" | "highlight" => format!("{}", style(content).black().on_yellow()),
-            "em" | "i" => format!("{}", style(content).cyan()),
-            "strong" | "b" => format!("{}", style(content).yellow().bold()),
-            "code" => format!("{}", style(content).green().on_black()),
-            "u" => format!("{}", style(content).underlined()),
-            "s" | "del" | "strike" => format!("{}", style(content).strikethrough().dim()),
-            "sub" => format!("{}", style(format!("_{}", content)).dim()),
-            "sup" => format!("{}", style(format!("^{}", content)).dim()),
-            "kbd" => format!("{}", style(format!("[{}]", content)).white().on_black()),
+            "mark" | "highlight" => style(content).black().on_yellow().to_string(),
+            "em" | "i" => style(content).cyan().to_string(),
+            "strong" | "b" => style(content).yellow().bold().to_string(),
+            "code" => style(content).green().on_black().to_string(),
+            "u" => style(content).underlined().to_string(),
+            "s" | "del" | "strike" => style(content).strikethrough().dim().to_string(),
+            "sub" => style(format!("_{}", content)).dim().to_string(),
+            "sup" => style(format!("^{}", content)).dim().to_string(),
+            "kbd" => style(format!("[{}]", content)).white().on_black().to_string(),
             _ => content, // Unknown tag, return content as-is
         };
 
