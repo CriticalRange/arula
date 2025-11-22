@@ -24,24 +24,28 @@ cargo run -- --debug            # Run in debug mode
 **Key Modules**:
 - `app.rs`: Application state and AI message handling (~260 lines)
 - `main.rs`: Event loop, command handling, AI response processing
-- `modern_input.rs`: Modern input handler with inquire styling (CURRENT)
+- `reedline_input.rs`: Modern reedline input handler (CURRENT)
 - `input_handler.rs`: Legacy custom input handler (DEPRECATED)
-- `inquire_input.rs`: Inquire wrapper utilities for dialogs
 - `api.rs`: Traditional AI client with streaming support
 - `agent.rs`: Modern AI agent framework with type-safe tool calling
 - `agent_client.rs`: Client for agent-based AI interactions
 - `tools.rs`: Modern tool implementations (BashTool, etc.)
 - `output.rs`: Colored terminal output to stdout
 - `overlay_menu.rs`: Crossterm-based overlay menu system
+- `reedline_menu.rs`: Reedline-based menu implementation
 - `tool_call.rs`: Legacy bash command extraction from AI responses
 - `config.rs`: YAML-based configuration management
 - `chat.rs`: Chat message types and data structures
+- `visioneer.rs`: Desktop automation and screen analysis (Windows only)
+- `changelog.rs`: Changelog display functionality
 
 **Dual AI Architecture**:
 - **Legacy API**: Traditional streaming via `api.rs` for backward compatibility
 - **Modern Agent**: Type-safe tool calling via `agent.rs` and `tools.rs`
 - **AI Streaming**: Uses `tokio::sync::mpsc::unbounded_channel()` for non-blocking responses
 - **Terminal Design**: No alternate screen - all output flows to native scrollback buffer
+
+**Multi-Provider AI Support**: Supports OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, and custom providers via `config.rs`
 
 **CLI Interface**: Uses `clap` for command-line argument parsing with options:
 - `--verbose`: Verbose mode output
@@ -151,9 +155,12 @@ impl MyTool {
 ## Configuration
 
 Configuration is handled through YAML files in the user's config directory:
+- Multi-provider support with automatic migration from legacy single-provider format
 - Loaded via `Config::load_or_default()` in `app.rs`
 - Supports API endpoints, model settings, and user preferences
+- Provider-specific settings persistence
 - Uses serde for serialization/deserialization
+- Interactive configuration menu accessible via overlay system
 
 ## Terminal Notes
 
@@ -166,10 +173,10 @@ Configuration is handled through YAML files in the user's config directory:
 
 ## Key Libraries
 
-- **inquire**: Modern customizable terminal prompts with styling
+- **reedline**: Modern readline replacement with syntax highlighting and multi-line support
+- **nu-ansi-term**: Cross-platform color handling for terminal output
 - **crossterm**: Terminal manipulation (raw mode, cursor, styling)
 - **console**: Colored output with rich styling options
-- **dialoguer**: Interactive prompts (used in configuration menu)
 - **tokio**: Async runtime for AI streaming
 - **reqwest**: HTTP client with rustls-tls (no OpenSSL dependency)
 - **clap**: Command-line argument parsing
@@ -180,22 +187,32 @@ Configuration is handled through YAML files in the user's config directory:
 - **indicatif**: Progress bars and spinners for loading animations
 - **fastrand**: Simple and fast random number generation
 - **syntect**: Syntax highlighting for code blocks (supports many languages)
+- **termimad**: Markdown rendering for terminal output
+- **serde_yaml**: YAML configuration parsing
+- **base64**: Base64 encoding for vision inputs
+- **windows**: Windows APIs for Visioneer desktop automation (Windows only)
+- **uiautomation**: UI automation framework (Windows only)
+- **screenshots**: Screen capture functionality (Windows only)
 
 ## TODO: Future Enhancements
 
 ### UI/UX Improvements
-- [x] Progress indicators with spinners (using `indicatif` or console built-in)
+- [x] Progress indicators with spinners (using `indicatif` and console built-in)
 - [x] Formatted code blocks with syntax highlighting (using `syntect`)
 - [x] Syntax highlighting for AI responses (using `syntect`)
-- [ ] Better markdown rendering (using `termimad` or `comrak`)
+- [x] Better markdown rendering (using `termimad`)
 - [x] Multi-line input support (Shift+Enter for new line, Enter to send)
 - [x] Enhanced input prompt with status indicators (⚡🔧▶ states)
 - [x] Token count display with color-coded warnings
+- [x] Real-time changelog display in startup banner
 - [ ] Message history browser
 
 ### Features
+- [x] Multi-provider AI support (OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, custom)
+- [x] Interactive configuration menu with provider switching
+- [x] Desktop automation (Visioneer) for Windows systems
+- [x] Function/tool calling support with 5 built-in tools
+- [x] Image input support (base64 encoding for vision models)
 - [ ] Save/load conversation sessions
 - [ ] Export conversations to markdown
 - [ ] Custom system prompts
-- [ ] Function/tool calling support
-- [ ] Image input support (for vision models)

@@ -15,7 +15,7 @@ pub mod config;
 pub mod custom_spinner;
 pub mod input_handler;
 pub mod reedline_input;
-pub mod reedline_menu;
+pub mod ui;
 pub mod output;
 pub mod overlay_menu;
 pub mod test_utils;

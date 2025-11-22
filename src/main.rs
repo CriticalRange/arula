@@ -42,12 +42,12 @@ mod config;
 mod custom_spinner;
 mod input_handler;
 mod reedline_input;
-mod reedline_menu;
 mod output;
 mod overlay_menu;
 mod tool_call;
 mod tool_progress;
 mod tools;
+mod ui;
 
 use app::App;
 use output::OutputHandler;
