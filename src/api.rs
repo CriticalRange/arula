@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 /// Debug print helper that checks ARULA_DEBUG environment variable
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").is_ok() {
-        eprintln!("{}", msg);
+        println!("🔧 DEBUG: {}", msg);
     }
 }
 
