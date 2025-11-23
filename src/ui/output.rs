@@ -1,6 +1,7 @@
 use crate::api::api::Usage;
 use crate::utils::colors::{ColorTheme, helpers};
 use console::style;
+use crossbeam_channel::Sender;
 use crossterm::terminal;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{self, Write};
@@ -186,6 +187,7 @@ pub struct OutputHandler {
     code_block_content: String,
     line_buffer: String,
     last_printed_len: usize,
+    external_printer: Option<Sender<String>>,
 }
 
 impl OutputHandler {
@@ -215,6 +217,7 @@ impl OutputHandler {
             code_block_content: String::new(),
             line_buffer: String::new(),
             last_printed_len: 0,
+            external_printer: None,
         }
     }
 
@@ -225,6 +228,38 @@ impl OutputHandler {
 
     pub fn is_debug(&self) -> bool {
         self.debug
+    }
+
+    /// Set ExternalPrinter sender for concurrent output while in read_line()
+    pub fn set_external_printer(&mut self, sender: Sender<String>) {
+        self.external_printer = Some(sender);
+    }
+
+    /// Helper to print either via ExternalPrinter or stdout
+    fn print_line(&self, text: String) -> io::Result<()> {
+        if let Some(sender) = &self.external_printer {
+            // Use ExternalPrinter - send with newline
+            let _ = sender.send(format!("{}\n", text));
+            Ok(())
+        } else {
+            // Fallback to stdout
+            println!("{}", text);
+            Ok(())
+        }
+    }
+
+    /// Helper to print without newline (for streaming)
+    fn print_inline(&self, text: &str) -> io::Result<()> {
+        if let Some(sender) = &self.external_printer {
+            // Use ExternalPrinter - send without newline
+            let _ = sender.send(text.to_string());
+            Ok(())
+        } else {
+            // Fallback to stdout
+            print!("{}", text);
+            std::io::stdout().flush()?;
+            Ok(())
+        }
     }
 
     /// Get the terminal width, falling back to a reasonable default if unavailable
@@ -572,6 +607,7 @@ impl OutputHandler {
         self.accumulated_text.push_str(chunk);
 
         // Stream the chunk with markdown rendering
+        // This will now use ExternalPrinter if available
         self.stream_markdown(chunk)?;
 
         Ok(())
@@ -731,22 +767,22 @@ impl OutputHandler {
                 continue;
             }
 
-            // Use termimad's print_inline for complete lines to avoid spacing issues
-            self.mad_skin.print_inline(line);
-            println!();
+            // Render line and print (will use ExternalPrinter if available)
+            let rendered = self.mad_skin.inline(line).to_string();
+            self.print_line(rendered)?;
 
             // Remove processed line from buffer
             self.line_buffer = self.line_buffer[(newline_pos + 1)..].to_string();
             self.last_printed_len = 0;
         }
 
-        // For partial lines, use termimad's print_inline to avoid multiple renderings
+        // For partial lines, use termimad's inline rendering
         if !self.line_buffer.is_empty() && !self.in_code_block {
             // Only render if we have new content
             if self.last_printed_len < self.line_buffer.len() {
                 // Render the entire line buffer to ensure consistent formatting
-                self.mad_skin.print_inline(&self.line_buffer);
-                std::io::stdout().flush()?;
+                let rendered = self.mad_skin.inline(&self.line_buffer).to_string();
+                self.print_inline(&rendered)?;
                 self.last_printed_len = self.line_buffer.len();
             }
         }

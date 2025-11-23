@@ -309,6 +309,17 @@ async fn main() -> Result<()> {
     let mut reedline_input = ReedlineInput::new()?;
     let mut custom_spinner = custom_spinner::CustomSpinner::new();
 
+    // Get ExternalPrinter sender for concurrent AI output
+    let external_printer = reedline_input.get_printer_sender();
+
+    // Set ExternalPrinter in App
+    // The App's internal tokio task will send responses directly to ExternalPrinter
+    // while read_line() is active, achieving full duplex mode
+    app.set_external_printer(external_printer.clone());
+
+    // Set ExternalPrinter in OutputHandler (for legacy compatibility)
+    output.set_external_printer(external_printer.clone());
+
     // Create menus using the new modular system
     let mut main_menu = MainMenu::new();
     let mut config_menu = ConfigMenu::new();
@@ -321,130 +332,21 @@ async fn main() -> Result<()> {
     reedline_input.set_ai_state(AiState::Ready);
 
     // Main event loop
+    // Now using ExternalPrinter for full duplex mode:
+    // - App's tokio task sends AI responses directly to ExternalPrinter
+    // - reedline's read_line() displays them automatically every 100ms
+    // - User can type while AI streams responses (full duplex!)
     'main_loop: loop {
-        // If AI is processing, handle responses
+        // Update AI state in prompt based on current status
         if app.is_waiting_for_response() {
-            // Update prompt to show waiting state
             reedline_input.set_ai_state(AiState::Waiting);
-
-            while app.is_waiting_for_response() {
-                // Poll for AI responses (non-blocking with short timeout)
-                std::thread::sleep(std::time::Duration::from_millis(10));
-
-                match app.check_ai_response_nonblocking() {
-                    Some(response) => {
-                        match response {
-                            app::AiResponse::AgentStreamStart => {
-                                if custom_spinner.is_running() {
-                                    custom_spinner.stop();
-                                }
-                                // Move to beginning of current line and clear it (contains user's input)
-                                execute!(
-                                    std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine)
-                                )?;
-                                std::io::stdout().flush()?;
-                                // Start AI message output without prefix
-                                output.start_ai_message()?;
-                            }
-                            app::AiResponse::AgentStreamText(text) => {
-                                // Always stop spinner first if running
-                                if custom_spinner.is_running() {
-                                    custom_spinner.stop();
-                                    // The spinner.stop() already clears its line, no need for additional clearing
-                                    std::io::stdout().flush()?;
-                                }
-
-                                // Print the chunk without starting spinner immediately
-                                // Note: print_streaming_chunk handles its own spinner logic
-                                output.print_streaming_chunk(&text)?;
-                            }
-                            app::AiResponse::AgentToolCall {
-                                id: _,
-                                name,
-                                arguments,
-                            } => {
-                                custom_spinner.stop();
-                                // Clear only the current line (where spinner was)
-                                execute!(
-                                    std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine)
-                                )?;
-                                output.start_tool_execution(&name, &arguments)?;
-                                // Set up spinner above input prompt
-                                print!("{} ", console::style("▶").cyan());
-                                std::io::stdout().flush()?;
-                                custom_spinner.start_above(&format!("Executing tool: {}", name))?;
-                            }
-                            app::AiResponse::AgentToolResult {
-                                tool_call_id: _,
-                                success,
-                                result,
-                            } => {
-                                custom_spinner.stop();
-                                // Clear only the current line (where spinner was)
-                                execute!(
-                                    std::io::stdout(),
-                                    cursor::MoveToColumn(0),
-                                    terminal::Clear(terminal::ClearType::CurrentLine)
-                                )?;
-                                let result_text = format_tool_result(&result);
-
-                                // Check if this is a colored diff - if so, print it directly without box
-                                if result_text.contains("\u{1b}[") &&
-                                   (result_text.contains("\u{1b}[31m") || result_text.contains("\u{1b}[32m")) {
-                                    // This is a colored diff, print directly
-                                    println!("{}", result_text);
-                                } else {
-                                    // Regular tool result, use box formatting
-                                    output.complete_tool_execution(&result_text, success)?;
-                                }
-
-                                // Restore spinner above input prompt
-                                print!("{} ", console::style("▶").cyan());
-                                std::io::stdout().flush()?;
-                                custom_spinner.start_above("Processing results...")?;
-                            }
-                            app::AiResponse::AgentStreamEnd => {
-                                // Stop spinner cleanly
-                                custom_spinner.stop();
-                                output.stop_spinner();
-
-                                // Finish the AI message line
-                                output.end_line()?;
-                                output.print_context_usage(None)?;
-
-                                // Clear accumulated text to reset state for next response
-                                output.clear_accumulated_text();
-
-                                // Add blank line after AI response
-                                println!();
-
-                                // Reset AI state to ready for next input
-                                reedline_input.set_ai_state(AiState::Ready);
-
-                                break; // Exit the AI response loop
-                            }
-                        }
-                    }
-                    None => {
-                        // Start spinner immediately if not running
-                        if !custom_spinner.is_running() {
-                            custom_spinner.start_above("Generating response...")?;
-                        }
-                    }
-                }
-            }
-
-            continue; // Continue to next iteration to get input
+        } else {
+            reedline_input.set_ai_state(AiState::Ready);
         }
 
-        // Update AI state in prompt
-        reedline_input.set_ai_state(AiState::Ready);
-
         // Get input from reedline
+        // NOTE: read_line() automatically checks ExternalPrinter every 100ms
+        // and displays any messages sent by App's background tokio task
         match reedline_input.read_line()? {
             Some(input) => {
                 // Handle special signals from reedline
@@ -476,11 +378,7 @@ async fn main() -> Result<()> {
                     continue 'main_loop;
                 }
 
-                // Handle Ctrl+D (EOF)
-                if input.is_empty() {
-                    output.print_system("Goodbye! 👋")?;
-                    break 'main_loop;
-                }
+                // Note: Empty input is handled by reedline_input.rs (skips and continues)
 
                 // Handle exit commands
                 if input == "exit" || input == "quit" {
@@ -506,9 +404,6 @@ async fn main() -> Result<()> {
                     continue 'main_loop;
                 }
 
-                // Move to next line after user's input
-                println!();
-
                 // Update prompt to "thinking" state
                 reedline_input.set_ai_state(AiState::Thinking);
 
@@ -522,6 +417,8 @@ async fn main() -> Result<()> {
                         if cli.verbose {
                             output.print_system("DEBUG: AI request sent successfully")?;
                         }
+                        // DON'T wait for response - continue to next read_line()
+                        // AI responses will appear via ExternalPrinter while user types next message
                     }
                     Err(e) => {
                         // Handle AI client errors gracefully

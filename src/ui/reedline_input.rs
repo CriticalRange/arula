@@ -7,23 +7,29 @@
 //! - Inline history-based hints
 //! - Context-aware syntax highlighting
 //! - Dynamic prompt with AI status, token count, session ID
-//! - Custom loading spinner integration
+//! - Embedded orbital spinner animation in prompt (when AI thinking)
+//! - Transient prompts (old prompts collapse to simple ❯) ✨ NEW in reedline 0.43!
+//! - **ExternalPrinter for concurrent output** (AI streams while prompt visible!) 🚀 NEW!
+//! - Clipboard integration (Ctrl+V paste, Ctrl+K/U/W cut)
+//! - Prettier multiline indicator (╎ instead of │)
 //! - Persistent history with immediate save
 //! - Bracketed paste support with confirmations
 //! - ESC-based menu system built into reedline
 
 use anyhow::{Context, Result};
+use crossbeam_channel::Sender;
 use crossterm::style::Stylize;
 use nu_ansi_term::{Style as ReedlineStyle, Color as ReedlineColor};
 use reedline::{
     default_emacs_keybindings, ColumnarMenu, DefaultCompleter, DefaultHinter,
-    EditCommand, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
+    EditCommand, Emacs, ExternalPrinter, FileBackedHistory, KeyCode, KeyModifiers,
     Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus,
     Reedline, ReedlineEvent, ReedlineMenu, Signal, ValidationResult, Validator,
 };
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// AI processing state for dynamic prompt
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +39,12 @@ pub enum AiState {
     Waiting,
 }
 
+/// Orbital spinner frames from CustomSpinner (for embedding in prompt)
+const SPINNER_FRAMES: [&str; 12] = [
+    "⢎⡰", "⢎⡡", "⢎⡑", "⢎⠱", "⠎⡱", "⢊⡱",
+    "⢌⡱", "⢆⡱", "⢎⡰", "⢎⡔", "⢎⡒", "⢎⡂",
+];
+
 /// Application state shared with the prompt
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -41,14 +53,16 @@ pub struct AppState {
     pub token_limit: usize,
     pub session_id: String,
     pub esc_count: usize, // Track ESC presses for double-ESC menu trigger
-    pub last_esc_time: std::time::Instant, // Track timing for ESC double-press
-    pub last_signal_time: std::time::Instant, // Track timing for signal frequency
+    pub last_esc_time: Instant, // Track timing for ESC double-press
+    pub last_signal_time: Instant, // Track timing for signal frequency
     pub ctrl_c_pending: bool, // Flag to indicate Ctrl+C was pressed (not ESC)
+    pub spinner_frame: usize, // Current spinner animation frame
+    pub spinner_last_update: Instant, // Last time spinner was updated
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         Self {
             ai_state: AiState::Ready,
             token_count: 0,
@@ -58,6 +72,8 @@ impl Default for AppState {
             last_esc_time: now,
             last_signal_time: now,
             ctrl_c_pending: false,
+            spinner_frame: 0,
+            spinner_last_update: now,
         }
     }
 }
@@ -72,11 +88,25 @@ impl ArulaPrompt {
         Self { state }
     }
 
-    fn get_ai_icon(&self, ai_state: AiState) -> &str {
+    fn get_ai_icon(&self, ai_state: AiState, spinner_frame: usize) -> String {
         match ai_state {
-            AiState::Ready => "⚡",
-            AiState::Thinking => "🔧",
-            AiState::Waiting => "⏳",
+            AiState::Ready => "⚡".to_string(),
+            AiState::Thinking => {
+                // Embed spinner animation when AI is thinking
+                SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()].to_string()
+            },
+            AiState::Waiting => "⏳".to_string(),
+        }
+    }
+
+    fn update_spinner_frame(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            let now = Instant::now();
+            // Update spinner every 100ms (matching CustomSpinner speed)
+            if now.duration_since(state.spinner_last_update).as_millis() >= 100 {
+                state.spinner_frame = (state.spinner_frame + 1) % SPINNER_FRAMES.len();
+                state.spinner_last_update = now;
+            }
         }
     }
 
@@ -105,14 +135,17 @@ impl ArulaPrompt {
 
 impl Prompt for ArulaPrompt {
     fn render_prompt_left(&self) -> Cow<str> {
+        // Update spinner frame if AI is thinking
+        self.update_spinner_frame();
+
         let state = self.state.lock().unwrap();
 
-        let icon = self.get_ai_icon(state.ai_state);
+        let icon = self.get_ai_icon(state.ai_state, state.spinner_frame);
         let token_display = self.get_token_display(state.token_count, state.token_limit);
         let session_display = self.get_session_display(&state.session_id);
 
         // Format: ⚡[234] s:a2f3 >
-        let mut parts = vec![icon.to_string()];
+        let mut parts = vec![icon];
 
         if !token_display.is_empty() {
             parts.push(token_display);
@@ -136,7 +169,45 @@ impl Prompt for ArulaPrompt {
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<str> {
-        Cow::Borrowed("│ ")
+        // Use prettier box-drawing character
+        Cow::Borrowed("╎ ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        history_search: PromptHistorySearch,
+    ) -> Cow<str> {
+        let prefix = match history_search.status {
+            PromptHistorySearchStatus::Passing => "",
+            PromptHistorySearchStatus::Failing => "failing ",
+        };
+
+        Cow::Owned(format!(
+            "({}reverse-search: {}) ",
+            prefix, history_search.term
+        ))
+    }
+
+}
+
+/// Transient prompt - simple collapsed version for old commands
+pub struct ArulaTransientPrompt;
+
+impl Prompt for ArulaTransientPrompt {
+    fn render_prompt_left(&self) -> Cow<str> {
+        Cow::Borrowed("❯")
+    }
+
+    fn render_prompt_right(&self) -> Cow<str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _edit_mode: PromptEditMode) -> Cow<str> {
+        Cow::Borrowed(" ")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+        Cow::Borrowed("╎ ")
     }
 
     fn render_prompt_history_search_indicator(
@@ -271,6 +342,7 @@ pub struct ReedlineInput {
     prompt: ArulaPrompt,
     state: Arc<Mutex<AppState>>,
     history_path: PathBuf,
+    external_printer: ExternalPrinter<String>,
 }
 
 impl ReedlineInput {
@@ -299,6 +371,35 @@ impl ReedlineInput {
             ReedlineEvent::Menu("completion_menu".to_string()),
         );
 
+        // Clipboard integration
+        // Ctrl+V for paste (in addition to bracketed paste)
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('v'),
+            ReedlineEvent::Edit(vec![EditCommand::PasteCutBufferBefore]),
+        );
+
+        // Ctrl+K to cut to end of line
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('k'),
+            ReedlineEvent::Edit(vec![EditCommand::CutToEnd]),
+        );
+
+        // Ctrl+U to cut to beginning of line
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('u'),
+            ReedlineEvent::Edit(vec![EditCommand::CutFromStart]),
+        );
+
+        // Ctrl+W to cut previous word
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('w'),
+            ReedlineEvent::Edit(vec![EditCommand::CutWordLeft]),
+        );
+
         // ESC handling: Clear buffer + track for double-ESC menu
         // Use ExecuteHostCommand to handle ESC tracking outside reedline
         keybindings.add_binding(
@@ -316,6 +417,9 @@ impl ReedlineInput {
             KeyCode::Char('c'),
             ReedlineEvent::UntilFound(vec![ReedlineEvent::CtrlD]), // Try CtrlD signal
         );
+
+        // NOTE: We DO NOT override Enter here because reedline will still submit empty buffers
+        // Instead, we handle empty buffers in our read_line() loop below
 
         // Create edit mode with keybindings
         let edit_mode = Box::new(Emacs::new(keybindings));
@@ -340,6 +444,12 @@ impl ReedlineInput {
         // Create highlighter
         let highlighter = Box::new(ArulaSyntaxHighlighter);
 
+        // Create transient prompt for collapsed old commands
+        let transient_prompt = Box::new(ArulaTransientPrompt);
+
+        // Create ExternalPrinter for concurrent output while reading input
+        let external_printer = ExternalPrinter::new(1000); // Buffer up to 1000 messages
+
         // Build reedline editor
         let editor = Reedline::create()
             .with_history(history)
@@ -351,7 +461,9 @@ impl ReedlineInput {
             .with_highlighter(highlighter)
             .with_quick_completions(true)
             .with_partial_completions(true)
-            .use_bracketed_paste(true); // Enable bracketed paste
+            .use_bracketed_paste(true) // Enable bracketed paste
+            .with_transient_prompt(transient_prompt) // Collapse old prompts to simple ❯
+            .with_external_printer(external_printer.clone()); // Enable concurrent output
 
         let prompt = ArulaPrompt::new(state.clone());
 
@@ -360,6 +472,7 @@ impl ReedlineInput {
             prompt,
             state,
             history_path,
+            external_printer,
         })
     }
 
@@ -510,9 +623,9 @@ impl ReedlineInput {
                     // Reset ESC counter on successful input
                     self.reset_esc();
 
-                    // Check for empty input
+                    // Skip empty input (just pressing Enter without typing anything)
                     if buffer.trim().is_empty() {
-                        continue; // Block empty messages
+                        continue;
                     }
 
                     // Check token limit warning
@@ -538,6 +651,11 @@ impl ReedlineInput {
                         .collect::<Vec<_>>()
                         .join(" ");
 
+                    // Final check: ensure processed result is not empty
+                    if processed.trim().is_empty() {
+                        continue;
+                    }
+
                     return Ok(Some(processed));
                 }
                 Signal::CtrlC => {
@@ -552,6 +670,11 @@ impl ReedlineInput {
                 }
             }
         }
+    }
+
+    /// Get sender for external printer (for concurrent output)
+    pub fn get_printer_sender(&self) -> Sender<String> {
+        self.external_printer.sender()
     }
 
     /// Save history (called on graceful shutdown)
@@ -584,15 +707,17 @@ mod tests {
     fn test_multiline_validator() {
         let validator = MultilineValidator;
 
-        assert_eq!(
+        // Test multiline continuation
+        assert!(matches!(
             validator.validate("hello world\\"),
             ValidationResult::Incomplete
-        );
+        ));
 
-        assert_eq!(
+        // Test normal input
+        assert!(matches!(
             validator.validate("hello world"),
             ValidationResult::Complete
-        );
+        ));
     }
 
     #[test]

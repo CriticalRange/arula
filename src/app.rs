@@ -5,12 +5,182 @@ use crate::utils::config::Config;
 use crate::utils::tool_call::{execute_bash_tool, ToolCall, ToolCallResult};
 use anyhow::Result;
 use futures::StreamExt;
+use nu_ansi_term::{Color, Style};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use termimad::MadSkin;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Render markdown inline using termimad for ExternalPrinter output
+fn render_markdown_line(line: &str) -> String {
+    let mut skin = MadSkin::default();
+
+    // Configure colors similar to OutputHandler
+    use termimad::crossterm::style::Color as TMColor;
+    skin.bold.set_fg(TMColor::Yellow);
+    skin.italic.set_fg(TMColor::Cyan);
+    skin.inline_code.set_fg(TMColor::Cyan);
+    skin.code_block.set_fg(TMColor::Green);
+
+    // Render inline markdown
+    skin.inline(line).to_string()
+}
+
+/// Format a code block with simple borders for ExternalPrinter
+fn format_code_block(content: &str) -> String {
+    use nu_ansi_term::Color;
+
+    let mut result = String::new();
+
+    // Top border
+    result.push_str(&Color::DarkGray.paint("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n").to_string());
+
+    // Content lines with borders
+    for line in content.lines() {
+        result.push_str(&Color::DarkGray.paint("┃ ").to_string());
+        result.push_str(&Color::White.paint(line).to_string());
+        result.push('\n');
+    }
+
+    // Bottom border
+    result.push_str(&Color::DarkGray.paint("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n").to_string());
+
+    result
+}
+
+/// Format tool call with icon and human-readable description
+fn format_tool_call(tool_name: &str, arguments: &str) -> String {
+    use nu_ansi_term::Color;
+
+    // Parse arguments to extract key information
+    let args: Result<Value, _> = serde_json::from_str(arguments);
+
+    let (icon, description) = match tool_name {
+        "list_directory" => {
+            let path = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("path"))
+                .and_then(|p| p.as_str())
+                .unwrap_or(".");
+            ("📂", format!("Listing directory: {}", path))
+        },
+        "read_file" => {
+            let path = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("path"))
+                .and_then(|p| p.as_str())
+                .unwrap_or("unknown");
+            ("📖", format!("Reading file: {}", path))
+        },
+        "write_file" => {
+            let path = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("path"))
+                .and_then(|p| p.as_str())
+                .unwrap_or("unknown");
+            ("✍️", format!("Writing file: {}", path))
+        },
+        "edit_file" => {
+            let path = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("path"))
+                .and_then(|p| p.as_str())
+                .unwrap_or("unknown");
+            ("✏️", format!("Editing file: {}", path))
+        },
+        "execute_bash" => {
+            let command = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("command"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("unknown");
+            // Truncate long commands
+            let display_cmd = if command.len() > 50 {
+                format!("{}...", &command[..47])
+            } else {
+                command.to_string()
+            };
+            ("⚙️", format!("Running: {}", display_cmd))
+        },
+        "search_files" => {
+            let query = args.as_ref()
+                .ok()
+                .and_then(|v| v.get("query"))
+                .and_then(|q| q.as_str())
+                .unwrap_or("unknown");
+            ("🔍", format!("Searching for: {}", query))
+        },
+        _ => ("🔧", format!("Running tool: {}", tool_name))
+    };
+
+    // Format with loading spinner and colored description
+    format!("{} {}",
+        Color::Cyan.paint(icon),
+        Color::White.dimmed().paint(description)
+    )
+}
+
+/// Summarize tool result in a human-readable format
+fn summarize_tool_result(result_value: &Value) -> String {
+    // Try to parse as our standard tool result format
+    if let Some(ok_result) = result_value.get("Ok") {
+        // list_directory results
+        if let Some(entries) = ok_result.get("entries") {
+            if let Some(arr) = entries.as_array() {
+                let files = arr.iter().filter(|e| e.get("file_type").and_then(|t| t.as_str()) == Some("file")).count();
+                let dirs = arr.iter().filter(|e| e.get("file_type").and_then(|t| t.as_str()) == Some("directory")).count();
+                return format!("Found {} files and {} directories", files, dirs);
+            }
+        }
+
+        // execute_bash results
+        if let Some(stdout) = ok_result.get("stdout") {
+            if let Some(stdout_str) = stdout.as_str() {
+                let stderr = ok_result.get("stderr").and_then(|s| s.as_str()).unwrap_or("");
+                let exit_code = ok_result.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(0);
+
+                if exit_code == 0 {
+                    if !stdout_str.trim().is_empty() {
+                        return format!("Command succeeded:\n{}", stdout_str.trim());
+                    } else {
+                        return "Command succeeded (no output)".to_string();
+                    }
+                } else {
+                    return format!("Command failed (exit code {}):\n{}", exit_code, stderr);
+                }
+            }
+        }
+
+        // read_file results
+        if let Some(lines) = ok_result.get("lines") {
+            return format!("Read {} lines", lines);
+        }
+
+        // write_file/edit_file results
+        if let Some(message) = ok_result.get("message") {
+            if let Some(msg_str) = message.as_str() {
+                return msg_str.to_string();
+            }
+        }
+
+        // search_files results
+        if let Some(total_matches) = ok_result.get("total_matches") {
+            let files_searched = ok_result.get("files_searched").and_then(|f| f.as_i64()).unwrap_or(0);
+            return format!("Found {} matches in {} files", total_matches, files_searched);
+        }
+
+        // Generic success with success flag
+        if ok_result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+            return "Success".to_string();
+        }
+    }
+
+    // Fallback: show compact JSON
+    serde_json::to_string_pretty(result_value).unwrap_or_else(|_| result_value.to_string())
+}
 
 /// Debug print helper that checks ARULA_DEBUG environment variable
 fn debug_print(msg: &str) {
@@ -52,6 +222,8 @@ pub struct App {
     pub current_task_handle: Option<tokio::task::JoinHandle<()>>,
     // Model caches for all providers
     pub openrouter_models: Arc<Mutex<Option<Vec<String>>>>,
+    // ExternalPrinter sender for concurrent output while read_line() is active
+    pub external_printer: Option<crossbeam_channel::Sender<String>>,
     pub openai_models: Arc<Mutex<Option<Vec<String>>>>,
     pub anthropic_models: Arc<Mutex<Option<Vec<String>>>>,
     pub ollama_models: Arc<Mutex<Option<Vec<String>>>>,
@@ -74,6 +246,7 @@ impl App {
             debug: false,
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
+            external_printer: None,
             openrouter_models: Arc::new(Mutex::new(None)),
             openai_models: Arc::new(Mutex::new(None)),
             anthropic_models: Arc::new(Mutex::new(None)),
@@ -85,6 +258,11 @@ impl App {
     pub fn with_debug(mut self, debug: bool) -> Self {
         self.debug = debug;
         self
+    }
+
+    /// Set ExternalPrinter sender for concurrent output
+    pub fn set_external_printer(&mut self, sender: crossbeam_channel::Sender<String>) {
+        self.external_printer = Some(sender);
     }
 
     /// Build comprehensive system prompt from ARULA.md files
@@ -292,11 +470,15 @@ The user will manually rebuild after exiting the application.
         // Send message using modern agent in background
         let msg = message.to_string();
         let cancel_token = self.cancellation_token.clone();
+        let external_printer = self.external_printer.clone();
         let handle = tokio::spawn(async move {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     // Request was cancelled
                     let _ = tx.send(AiResponse::AgentStreamEnd);
+                    if let Some(ref printer) = external_printer {
+                        let _ = printer.send("\n".to_string());
+                    }
                 }
                 _result = async {
                     match agent_client.query(&msg, Some(api_messages)).await {
@@ -312,7 +494,18 @@ The user will manually rebuild after exiting the application.
                                     content_block = stream.next() => {
                                         match content_block {
                                             Some(ContentBlock::Text { text }) => {
-                                                let _ = tx.send(AiResponse::AgentStreamText(text));
+                                                let _ = tx.send(AiResponse::AgentStreamText(text.clone()));
+                                                if let Some(ref printer) = external_printer {
+                                                    // Render markdown for each line
+                                                    for line in text.lines() {
+                                                        let rendered = render_markdown_line(line);
+                                                        let _ = printer.send(format!("{}\n", rendered));
+                                                    }
+                                                    // If text doesn't end with newline, send one anyway
+                                                    if !text.ends_with('\n') && !text.is_empty() {
+                                                        let _ = printer.send("\n".to_string());
+                                                    }
+                                                }
                                             }
                                             Some(ContentBlock::ToolCall {
                                                 id,
@@ -320,27 +513,40 @@ The user will manually rebuild after exiting the application.
                                                 arguments,
                                             }) => {
                                                 let _ = tx.send(AiResponse::AgentToolCall {
-                                                    id,
-                                                    name,
-                                                    arguments,
+                                                    id: id.clone(),
+                                                    name: name.clone(),
+                                                    arguments: arguments.clone(),
                                                 });
+                                                if let Some(ref printer) = external_printer {
+                                                    // Format tool call with icon and human-readable name
+                                                    let tool_display = format_tool_call(&name, &arguments);
+                                                    let _ = printer.send(format!("{}\n", tool_display));
+                                                }
                                             }
                                             Some(ContentBlock::ToolResult {
                                                 tool_call_id,
                                                 result,
                                             }) => {
+                                                let status = if result.success { "✓" } else { "✗" };
                                                 let _ = tx.send(AiResponse::AgentToolResult {
-                                                    tool_call_id,
+                                                    tool_call_id: tool_call_id.clone(),
                                                     success: result.success,
-                                                    result: result.data,
+                                                    result: result.data.clone(),
                                                 });
+                                                if let Some(ref printer) = external_printer {
+                                                    // Summarize the result in a compact format
+                                                    let summary = summarize_tool_result(&result.data);
+                                                    let result_display = format!("  {} {}", status, summary);
+                                                    let _ = printer.send(format!("{}\n", result_display));
+                                                }
                                             }
                                             Some(ContentBlock::Error { error }) => {
                                                 // Convert error to AgentStreamText to maintain compatibility
-                                                let _ = tx.send(AiResponse::AgentStreamText(format!(
-                                                    "[Error] {}",
-                                                    error
-                                                )));
+                                                let error_msg = format!("[Error] {}", error);
+                                                let _ = tx.send(AiResponse::AgentStreamText(error_msg.clone()));
+                                                if let Some(ref printer) = external_printer {
+                                                    let _ = printer.send(format!("{}\n", error_msg));
+                                                }
                                                 break;
                                             }
                                             None => {
@@ -353,13 +559,18 @@ The user will manually rebuild after exiting the application.
                             }
 
                             let _ = tx.send(AiResponse::AgentStreamEnd);
+                            if let Some(ref printer) = external_printer {
+                                let _ = printer.send("\n".to_string());
+                            }
                         }
                         Err(e) => {
-                            let _ = tx.send(AiResponse::AgentStreamText(format!(
-                                "[Error] Failed to send message via agent: {}",
-                                e
-                            )));
+                            let error_msg = format!("**Error:** Failed to send message via agent: {}", e);
+                            let _ = tx.send(AiResponse::AgentStreamText(error_msg.clone()));
                             let _ = tx.send(AiResponse::AgentStreamEnd);
+                            if let Some(ref printer) = external_printer {
+                                let error_line = render_markdown_line(&error_msg);
+                                let _ = printer.send(format!("{}\n\n", error_line));
+                            }
                         }
                     }
                 } => {}
