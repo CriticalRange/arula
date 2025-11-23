@@ -226,12 +226,15 @@ impl Prompt for ArulaTransientPrompt {
     }
 }
 
-/// Multi-line validator - continues on trailing backslash
+/// Multi-line validator - continues on trailing backslash, rejects empty input
 pub struct MultilineValidator;
 
 impl Validator for MultilineValidator {
     fn validate(&self, line: &str) -> ValidationResult {
-        if line.trim_end().ends_with('\\') {
+        // Empty input handling - prevent submission at validator level
+        if line.trim().is_empty() {
+            ValidationResult::Incomplete
+        } else if line.trim_end().ends_with('\\') {
             ValidationResult::Incomplete
         } else {
             ValidationResult::Complete
@@ -360,8 +363,15 @@ impl ReedlineInput {
         // Create app state
         let state = Arc::new(Mutex::new(AppState::default()));
 
-        // Create custom keybindings based on Emacs
+      // Create custom keybindings based on Emacs
         let mut keybindings = default_emacs_keybindings();
+
+        // Add Ctrl+L to clear the input line (useful for escaping incomplete state)
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('l'),
+            ReedlineEvent::Edit(vec![EditCommand::Clear]),
+        );
 
         // Add custom keybindings
         // Ctrl+Space for completion menu
@@ -418,8 +428,7 @@ impl ReedlineInput {
             ReedlineEvent::UntilFound(vec![ReedlineEvent::CtrlD]), // Try CtrlD signal
         );
 
-        // NOTE: We DO NOT override Enter here because reedline will still submit empty buffers
-        // Instead, we handle empty buffers in our read_line() loop below
+        // Note: We handle empty input in the validator and read_line() loop
 
         // Create edit mode with keybindings
         let edit_mode = Box::new(Emacs::new(keybindings));
@@ -553,6 +562,11 @@ impl ReedlineInput {
 
             match sig {
                 Signal::Success(buffer) => {
+                    // IMMEDIATE empty input check - this should catch all empty input before any processing
+                    if buffer.is_empty() || buffer.trim().is_empty() || buffer.chars().all(|c| c.is_whitespace()) {
+                        continue;
+                    }
+
                     // Check for ESC tracking command from ExecuteHostCommand
                     if buffer == "__ESC_PRESSED__" {
                         // Check if AI is currently responding
@@ -624,7 +638,10 @@ impl ReedlineInput {
                     self.reset_esc();
 
                     // Skip empty input (just pressing Enter without typing anything)
-                    if buffer.trim().is_empty() {
+                    // Be extra strict about this - check multiple conditions
+                    if buffer.is_empty() || buffer.trim().is_empty() || buffer.chars().all(|c| c.is_whitespace()) {
+                        // For empty input, clear the line completely to avoid multiline buildup
+                        self.editor.run_edit_commands(&[EditCommand::Clear]);
                         continue;
                     }
 
@@ -652,7 +669,9 @@ impl ReedlineInput {
                         .join(" ");
 
                     // Final check: ensure processed result is not empty
-                    if processed.trim().is_empty() {
+                    if processed.is_empty() || processed.trim().is_empty() || processed.chars().all(|c| c.is_whitespace()) {
+                        // Clear the line to avoid multiline buildup
+                        self.editor.run_edit_commands(&[EditCommand::Clear]);
                         continue;
                     }
 

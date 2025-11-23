@@ -378,7 +378,13 @@ async fn main() -> Result<()> {
                     continue 'main_loop;
                 }
 
-                // Note: Empty input is handled by reedline_input.rs (skips and continues)
+                // Final safety check - ensure we never send empty input to AI
+                if input.trim().is_empty() {
+                    if cli.verbose {
+                        output.print_system(&format!("DEBUG: Main loop caught empty input: '{}'", input))?;
+                    }
+                    continue 'main_loop;
+                }
 
                 // Handle exit commands
                 if input == "exit" || input == "quit" {
@@ -410,6 +416,10 @@ async fn main() -> Result<()> {
                 // Send to AI
                 if cli.verbose {
                     output.print_system(&format!("DEBUG: Sending to AI: '{}'", input))?;
+                }
+                // Additional debug for empty input detection
+                if input.trim().is_empty() {
+                    output.print_system(&format!("DEBUG: WARNING - Sending empty input to AI: '{}'", input))?;
                 }
                 match app.send_to_ai(&input).await {
                     Ok(()) => {

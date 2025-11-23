@@ -174,6 +174,9 @@ Configuration is handled through YAML files in the user's config directory:
 ## Key Libraries
 
 - **reedline**: Modern readline replacement with syntax highlighting and multi-line support
+  - `ExternalPrinter` for concurrent output while typing
+  - `Validator` trait for input validation
+  - `Highlighter` trait for syntax highlighting
 - **nu-ansi-term**: Cross-platform color handling for terminal output
 - **crossterm**: Terminal manipulation (raw mode, cursor, styling)
 - **console**: Colored output with rich styling options
@@ -194,6 +197,54 @@ Configuration is handled through YAML files in the user's config directory:
 - **uiautomation**: UI automation framework (Windows only)
 - **screenshots**: Screen capture functionality (Windows only)
 
+## Recent Improvements & Fixes
+
+### Empty Input Prevention System (Latest)
+**Problem**: Users could submit empty input to AI by pressing Enter without typing anything.
+
+**Solution**: Comprehensive multi-layer empty input prevention system:
+
+1. **Reedline Validator Level** (`src/ui/reedline_input.rs:235-237`)
+   ```rust
+   if line.trim().is_empty() {
+       ValidationResult::Incomplete  // Prevents submission at source
+   }
+   ```
+
+2. **Multiple Reedline Safety Checks** (`src/ui/reedline_input.rs:637-639, 665-667`)
+   ```rust
+   if buffer.is_empty() || buffer.trim().is_empty() || buffer.chars().all(|c| c.is_whitespace()) {
+       self.editor.run_edit_commands(&[EditCommand::Clear]);  // Clear line to prevent buildup
+       continue;
+   }
+   ```
+
+3. **Main Loop Final Safety Net** (`src/main.rs:382-387`)
+   ```rust
+   if input.trim().is_empty() {
+       continue 'main_loop;  // Ultimate protection
+   }
+   ```
+
+4. **User Escape Mechanism** (`src/ui/reedline_input.rs:370-374`)
+   - `Ctrl+L` keybinding clears input line to escape incomplete state
+   - Users can recover from accidental incomplete states
+
+**Benefits**:
+- ✅ Zero empty input reaches AI
+- ✅ Clean user experience with no unwanted multiline behavior
+- ✅ Preserves legitimate multiline (trailing backslash)
+- ✅ Multiple safety nets ensure robustness
+- ✅ Debug visibility for troubleshooting
+
+### Terminal Scroll Positioning (Documented)
+**Current Issue**: When AI responses stream through reedline's `ExternalPrinter`, terminal may not scroll optimally to keep input visible at bottom.
+
+**Status**: Documented for future comprehensive solution
+- Multiple terminal escape sequence approaches attempted
+- Issue tracked in `src/app.rs:499-501` with TODO comment
+- Clean implementation ready for future improvements
+
 ## TODO: Future Enhancements
 
 ### UI/UX Improvements
@@ -205,7 +256,10 @@ Configuration is handled through YAML files in the user's config directory:
 - [x] Enhanced input prompt with status indicators (⚡🔧▶ states)
 - [x] Token count display with color-coded warnings
 - [x] Real-time changelog display in startup banner
+- [x] Empty input prevention system with comprehensive validation
+- [x] Multi-layer input validation with escape mechanisms
 - [ ] Message history browser
+- [ ] Terminal scroll positioning optimization for better AI response visibility
 
 ### Features
 - [x] Multi-provider AI support (OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, custom)

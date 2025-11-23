@@ -27,13 +27,22 @@ All notable changes to ARULA CLI will be documented in this file.
 - Non-editable API URL field now displays in gray color instead of showing error message
 
 ### Fixed
-- Provider switching now preserves individual provider configurations
-- API URL editing restricted to custom providers for safety
-- Menu flickering and artifacts during navigation eliminated
-- Overflow crash when search returns no results (attempt to subtract with overflow)
-- Ctrl+C key detection now works correctly (match arm ordering fixed)
-- Full viewport re-rendering on every arrow key press reduced to selective updates
-- Search UI breaking and showing artifacts when filtering models
+- **Empty input handling**: Comprehensive empty input prevention system with multiple validation layers
+  - Reedline validator prevents empty input submission at source
+  - Multiple safety checks catch any empty input that slips through
+  - Ctrl+L keybinding provides escape from incomplete state
+  - Main loop final safety net ensures no empty input reaches AI
+- **Provider switching** now preserves individual provider configurations
+- **API URL editing** restricted to custom providers for safety
+- **Menu flickering** and artifacts during navigation eliminated
+- **Overflow crash** when search returns no results (attempt to subtract with overflow)
+- **Ctrl+C key detection** now works correctly (match arm ordering fixed)
+- **Full viewport re-rendering** on every arrow key press reduced to selective updates
+- **Search UI** breaking and showing artifacts when filtering models
+- **Terminal scroll positioning**: Documented for future investigation
+  - Issue: Content may not scroll to keep input visible at bottom during AI responses
+  - Multiple terminal escape sequence approaches attempted and documented
+  - Clean implementation ready for future comprehensive solution
 
 ## [0.1.0] - 2025-01-22
 

@@ -496,6 +496,10 @@ The user will manually rebuild after exiting the application.
                                             Some(ContentBlock::Text { text }) => {
                                                 let _ = tx.send(AiResponse::AgentStreamText(text.clone()));
                                                 if let Some(ref printer) = external_printer {
+                                                    // TODO: Fix terminal scroll positioning
+                                                    // Currently, content may not scroll to keep input visible at bottom
+                                                    // This needs investigation - may require different approach or reedline config changes
+
                                                     // Render markdown for each line
                                                     for line in text.lines() {
                                                         let rendered = render_markdown_line(line);
