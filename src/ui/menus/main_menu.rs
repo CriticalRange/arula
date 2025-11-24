@@ -19,6 +19,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub enum MainMenuItem {
     ContinueChat,
+    Conversations,
     Settings,
     InfoHelp,
     ClearChat,
@@ -28,6 +29,7 @@ impl MainMenuItem {
     pub fn all() -> Vec<Self> {
         vec![
             MainMenuItem::ContinueChat,
+            MainMenuItem::Conversations,
             MainMenuItem::Settings,
             MainMenuItem::InfoHelp,
             MainMenuItem::ClearChat,
@@ -37,6 +39,7 @@ impl MainMenuItem {
     pub fn label(&self) -> &str {
         match self {
             MainMenuItem::ContinueChat => "⦿ Continue Chat",
+            MainMenuItem::Conversations => "📚 Conversations",
             MainMenuItem::Settings => "⚙ Configuration",
             MainMenuItem::InfoHelp => "ℹ Info & Help",
             MainMenuItem::ClearChat => "Ⓒ Clear Chat",
@@ -46,6 +49,7 @@ impl MainMenuItem {
     pub fn description(&self) -> &str {
         match self {
             MainMenuItem::ContinueChat => "Return to conversation",
+            MainMenuItem::Conversations => "View, load, or manage saved conversations",
             MainMenuItem::Settings => "Configure AI provider and configuration",
             MainMenuItem::InfoHelp => "View help and session information",
             MainMenuItem::ClearChat => "Clear conversation history",
@@ -329,11 +333,20 @@ impl MainMenu {
                     stdout().flush()?;
                     Ok(MenuResult::Continue)
                 }
+                MainMenuItem::Conversations => {
+                    // Show conversation selector submenu
+                    use crate::ui::menus::ConversationMenu;
+                    let mut conversation_menu = ConversationMenu::new();
+                    let result = conversation_menu.show(app, output)?;
+
+                    // Return the result from conversation menu (could be LoadConversation, NewConversation, or BackToMain)
+                    Ok(result)
+                }
                 MainMenuItem::Settings => {
                     // Clear screen before exiting
                     stdout().execute(terminal::Clear(terminal::ClearType::All))?;
                     stdout().flush()?;
-                    Ok(MenuResult::BackToMain)
+                    Ok(MenuResult::Settings)
                 }
                 MainMenuItem::InfoHelp => {
                     self.show_info_and_help(app, output)?;

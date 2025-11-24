@@ -125,6 +125,15 @@ fn format_tool_call(tool_name: &str, arguments: &str) -> String {
 
 /// Summarize tool result in a human-readable format
 fn summarize_tool_result(result_value: &Value) -> String {
+    // Check for error in Err wrapper first (e.g., {"Err": "error message"})
+    if let Some(err_value) = result_value.get("Err") {
+        if let Some(err_str) = err_value.as_str() {
+            return format!("Error: {}", err_str);
+        }
+        // If Err value is not a string, show it as JSON
+        return format!("Error: {}", serde_json::to_string_pretty(err_value).unwrap_or_else(|_| err_value.to_string()));
+    }
+
     // Try to parse as our standard tool result format
     if let Some(ok_result) = result_value.get("Ok") {
         // list_directory results
@@ -206,6 +215,24 @@ pub enum AiResponse {
     AgentStreamEnd,
 }
 
+/// Commands for tracking conversation history from background task
+#[derive(Debug)]
+enum TrackingCommand {
+    AssistantMessage(String),
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        result: serde_json::Value,
+        success: bool,
+        execution_time_ms: u64,
+    },
+}
+
 pub struct App {
     pub config: Config,
     pub agent_client: Option<AgentClient>,
@@ -228,11 +255,21 @@ pub struct App {
     pub anthropic_models: Arc<Mutex<Option<Vec<String>>>>,
     pub ollama_models: Arc<Mutex<Option<Vec<String>>>>,
     pub zai_models: Arc<Mutex<Option<Vec<String>>>>,
-    }
+    // Conversation tracking
+    pub current_conversation: Option<crate::utils::conversation::Conversation>,
+    pub auto_save_conversations: bool,
+    tracking_rx: Option<std::sync::mpsc::Receiver<TrackingCommand>>,
+    tracking_tx: Option<std::sync::mpsc::Sender<TrackingCommand>>,
+    // Shared conversation for immediate saving from background tasks
+    pub shared_conversation: Arc<Mutex<Option<crate::utils::conversation::Conversation>>>,
+}
 
 impl App {
     pub fn new() -> Result<Self> {
         let config = Config::load_or_default()?;
+
+        // Create persistent tracking channel
+        let (tracking_tx, tracking_rx) = std::sync::mpsc::channel();
 
         Ok(Self {
             config,
@@ -252,6 +289,11 @@ impl App {
             anthropic_models: Arc::new(Mutex::new(None)),
             ollama_models: Arc::new(Mutex::new(None)),
             zai_models: Arc::new(Mutex::new(None)),
+            current_conversation: None,
+            auto_save_conversations: true, // Default to auto-save
+            tracking_rx: Some(tracking_rx),
+            tracking_tx: Some(tracking_tx),
+            shared_conversation: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -445,6 +487,10 @@ The user will manually rebuild after exiting the application.
             ));
         }
 
+        // Clone the persistent tracking sender for this request
+        // All requests share the same receiver, so tracking commands are never lost
+        let track_tx = self.tracking_tx.clone().expect("Tracking channel not initialized");
+
         // Convert chat messages to API format for agent
         let api_messages: Vec<crate::api::api::ChatMessage> = self
             .messages
@@ -471,7 +517,13 @@ The user will manually rebuild after exiting the application.
         let msg = message.to_string();
         let cancel_token = self.cancellation_token.clone();
         let external_printer = self.external_printer.clone();
+        let shared_conv = self.shared_conversation.clone();
+        let auto_save = self.auto_save_conversations;
         let handle = tokio::spawn(async move {
+            // Track message content and tool calls for conversation history
+            let mut accumulated_text = String::new();
+            let mut tool_calls_list: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
+
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     // Request was cancelled
@@ -494,6 +546,9 @@ The user will manually rebuild after exiting the application.
                                     content_block = stream.next() => {
                                         match content_block {
                                             Some(ContentBlock::Text { text }) => {
+                                                // Accumulate text for tracking
+                                                accumulated_text.push_str(&text);
+
                                                 let _ = tx.send(AiResponse::AgentStreamText(text.clone()));
                                                 if let Some(ref printer) = external_printer {
                                                     // TODO: Fix terminal scroll positioning
@@ -516,6 +571,9 @@ The user will manually rebuild after exiting the application.
                                                 name,
                                                 arguments,
                                             }) => {
+                                                // Track tool call
+                                                tool_calls_list.push((id.clone(), name.clone(), arguments.clone()));
+
                                                 let _ = tx.send(AiResponse::AgentToolCall {
                                                     id: id.clone(),
                                                     name: name.clone(),
@@ -532,14 +590,28 @@ The user will manually rebuild after exiting the application.
                                                 result,
                                             }) => {
                                                 let status = if result.success { "✓" } else { "✗" };
+
+                                                // Clone result data for all uses
+                                                let result_data = result.data.clone();
+
                                                 let _ = tx.send(AiResponse::AgentToolResult {
                                                     tool_call_id: tool_call_id.clone(),
                                                     success: result.success,
-                                                    result: result.data.clone(),
+                                                    result: result_data.clone(),
                                                 });
+
+                                                // Send tracking command for tool result
+                                                let _ = track_tx.send(TrackingCommand::ToolResult {
+                                                    tool_call_id,
+                                                    tool_name: "unknown".to_string(),
+                                                    result: result_data.clone(),
+                                                    success: result.success,
+                                                    execution_time_ms: 100,
+                                                });
+
                                                 if let Some(ref printer) = external_printer {
                                                     // Summarize the result in a compact format
-                                                    let summary = summarize_tool_result(&result.data);
+                                                    let summary = summarize_tool_result(&result_data);
                                                     let result_display = format!("  {} {}", status, summary);
                                                     let _ = printer.send(format!("{}\n", result_display));
                                                 }
@@ -559,6 +631,42 @@ The user will manually rebuild after exiting the application.
                                             }
                                         }
                                     }
+                                }
+                            }
+
+                            // IMMEDIATELY save AI response to conversation (user's brilliant idea!)
+                            // This happens BEFORE printing to ExternalPrinter, ensuring JSON is updated instantly
+                            if !accumulated_text.is_empty() {
+                                debug_print(&format!("DEBUG: Immediately saving assistant message to shared conversation ({} chars)", accumulated_text.len()));
+
+                                if let Ok(mut conv_guard) = shared_conv.lock() {
+                                    if let Some(ref mut conv) = *conv_guard {
+                                        conv.add_assistant_message(accumulated_text.clone(), None);
+
+                                        // Save to disk immediately if auto-save is enabled
+                                        if auto_save {
+                                            if let Ok(current_dir) = std::env::current_dir() {
+                                                conv.update_duration();
+                                                let _ = conv.save(&current_dir);
+                                                debug_print("DEBUG: Conversation saved to disk immediately from tokio task!");
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // DON'T send tracking command - we already saved immediately above
+                                // The sync will happen when user sends next message via track_user_message()
+                                debug_print("DEBUG: Skipping tracking command - already saved immediately to shared_conversation");
+                            }
+
+                            for (id, name, args) in tool_calls_list {
+                                debug_print(&format!("DEBUG: Sending ToolCall tracking command: {}", name));
+                                if let Err(e) = track_tx.send(TrackingCommand::ToolCall {
+                                    id,
+                                    name,
+                                    arguments: args,
+                                }) {
+                                    debug_print(&format!("DEBUG: ERROR - Failed to send ToolCall tracking command: {}", e));
                                 }
                             }
 
@@ -587,6 +695,48 @@ The user will manually rebuild after exiting the application.
         Ok(())
     }
 
+
+    /// Process pending tracking commands
+    pub fn process_tracking_commands(&mut self) {
+        // Collect all pending commands first to avoid borrow checker issues
+        let commands: Vec<TrackingCommand> = if let Some(ref rx) = self.tracking_rx {
+            let mut cmds = Vec::new();
+            while let Ok(cmd) = rx.try_recv() {
+                cmds.push(cmd);
+            }
+            if !cmds.is_empty() && self.debug {
+                debug_print(&format!("DEBUG: Processing {} tracking commands", cmds.len()));
+            }
+            cmds
+        } else {
+            Vec::new()
+        };
+
+        // Now process the collected commands
+        for cmd in commands {
+            match cmd {
+                TrackingCommand::AssistantMessage(content) => {
+                    if self.debug {
+                        debug_print(&format!("DEBUG: Tracking assistant message ({} chars)", content.len()));
+                    }
+                    self.track_assistant_message(&content);
+                }
+                TrackingCommand::ToolCall { id, name, arguments } => {
+                    if self.debug {
+                        debug_print(&format!("DEBUG: Tracking tool call: {}", name));
+                    }
+                    self.track_tool_call(id, name, arguments);
+                }
+                TrackingCommand::ToolResult { tool_call_id, tool_name, result, success, execution_time_ms } => {
+                    if self.debug {
+                        debug_print(&format!("DEBUG: Tracking tool result: {} ({})", tool_name, if success { "success" } else { "failed" }));
+                    }
+                    self.track_tool_result(tool_call_id, tool_name, result, success, execution_time_ms);
+                }
+            }
+        }
+    }
+
     pub fn check_ai_response_nonblocking(&mut self) -> Option<AiResponse> {
         if let Some(rx) = &mut self.ai_response_rx {
             match rx.try_recv() {
@@ -601,7 +751,7 @@ The user will manually rebuild after exiting the application.
                             }
                         }
                         AiResponse::AgentToolCall {
-                            id: _,
+                            id,
                             name,
                             arguments,
                         } => {
@@ -610,6 +760,9 @@ The user will manually rebuild after exiting the application.
                                 MessageType::ToolCall,
                                 format!("🔧 Tool call: {}({})", name, arguments),
                             ));
+
+                            // Track tool call in conversation
+                            self.track_tool_call(id.clone(), name.clone(), arguments.clone());
                         }
                         AiResponse::AgentToolResult {
                             tool_call_id,
@@ -628,11 +781,23 @@ The user will manually rebuild after exiting the application.
                                     status, tool_call_id, result_text
                                 ),
                             ));
+
+                            // Track tool result in conversation (assuming 100ms execution time as placeholder)
+                            self.track_tool_result(
+                                tool_call_id.clone(),
+                                "unknown".to_string(), // Tool name not available in this context
+                                result.clone(),
+                                *success,
+                                100
+                            );
                         }
                         AiResponse::AgentStreamEnd => {
                             if let Some(full_message) = self.current_streaming_message.take() {
                                 self.messages
-                                    .push(ChatMessage::new(MessageType::Arula, full_message));
+                                    .push(ChatMessage::new(MessageType::Arula, full_message.clone()));
+
+                                // Track assistant message in conversation
+                                self.track_assistant_message(&full_message);
                             }
                             self.ai_response_rx = None;
                         }
@@ -1271,6 +1436,242 @@ The user will manually rebuild after exiting the application.
 
         // Clean up extra whitespace
         result.trim().to_string()
+    }
+
+    // ============================================================================
+    // Conversation Management Methods
+    // ============================================================================
+
+    /// Start a new conversation or get current one
+    pub fn ensure_conversation(&mut self) {
+        if self.current_conversation.is_none() {
+            use crate::utils::conversation::Conversation;
+
+            let provider_config = self.config.get_active_provider_config()
+                .expect("Active provider not found");
+            let model = provider_config.model.clone();
+            let provider = self.config.active_provider.clone();
+            let endpoint = provider_config.api_url.clone().unwrap_or_default();
+
+            let mut conversation = Conversation::new(model, provider, endpoint);
+
+            // Auto-generate title from first user message if we have messages
+            if !self.messages.is_empty() {
+                if let Some(first_msg) = self.messages.first() {
+                    if first_msg.message_type == crate::utils::chat::MessageType::User {
+                        let title = Self::generate_conversation_title(&first_msg.content);
+                        conversation.set_title(title);
+                    }
+                }
+            }
+
+            self.current_conversation = Some(conversation.clone());
+
+            // Also update shared conversation for background tasks
+            if let Ok(mut shared) = self.shared_conversation.lock() {
+                *shared = Some(conversation);
+            }
+        }
+    }
+
+    /// Generate a title from the first user message
+    fn generate_conversation_title(content: &str) -> String {
+        let max_len = 50;
+        let cleaned = content.trim().lines().next().unwrap_or("New Conversation");
+
+        if cleaned.len() <= max_len {
+            cleaned.to_string()
+        } else {
+            format!("{}...", &cleaned[..max_len-3])
+        }
+    }
+
+    /// Save current conversation to disk
+    pub fn save_conversation(&mut self) -> Result<()> {
+        if let Some(ref mut conv) = self.current_conversation {
+            conv.update_duration();
+            let current_dir = std::env::current_dir()?;
+            conv.save(&current_dir)?;
+        }
+        Ok(())
+    }
+
+    /// Load a conversation from disk
+    pub fn load_conversation(&mut self, conversation_id: &str) -> Result<()> {
+        use crate::utils::conversation::Conversation;
+        use crate::utils::chat::MessageType;
+
+        let current_dir = std::env::current_dir()?;
+        let conversation = Conversation::load(&current_dir, conversation_id)?;
+
+        // Convert conversation messages to chat messages
+        self.messages.clear();
+        for msg in &conversation.messages {
+            match msg.role.as_str() {
+                "user" => {
+                    if let Some(content) = &msg.content {
+                        if let Some(text) = content.as_str() {
+                            self.messages.push(ChatMessage::new(MessageType::User, text.to_string()));
+                        }
+                    }
+                }
+                "assistant" => {
+                    if let Some(content) = &msg.content {
+                        if let Some(text) = content.as_str() {
+                            self.messages.push(ChatMessage::new(MessageType::Arula, text.to_string()));
+                        }
+                    }
+
+                    // Load tool calls from assistant message
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tool_call in tool_calls {
+                            // Create a JSON representation of the tool call for display
+                            let tool_call_json = serde_json::json!({
+                                "id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments,
+                            });
+                            self.messages.push(ChatMessage::new(
+                                MessageType::ToolCall,
+                                tool_call_json.to_string()
+                            ));
+                        }
+                    }
+                }
+                "tool" => {
+                    // Tool result messages
+                    if let Some(content) = &msg.content {
+                        // Convert the content (which is JSON) to a string for display
+                        let content_str = if content.is_object() || content.is_array() {
+                            serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
+                        } else if let Some(text) = content.as_str() {
+                            text.to_string()
+                        } else {
+                            content.to_string()
+                        };
+
+                        self.messages.push(ChatMessage::new(MessageType::ToolResult, content_str));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.current_conversation = Some(conversation);
+        Ok(())
+    }
+
+    /// Track user message in conversation
+    pub fn track_user_message(&mut self, content: &str) {
+        self.ensure_conversation();
+
+        // FIRST: Sync FROM shared_conversation TO current_conversation
+        // Only copy if shared has MORE messages (i.e., new AI responses from tokio task)
+        if let Ok(shared) = self.shared_conversation.lock() {
+            if let Some(ref shared_conv) = *shared {
+                if let Some(ref mut conv) = self.current_conversation {
+                    // Only update if shared has more messages than current
+                    if shared_conv.messages.len() > conv.messages.len() {
+                        debug_print(&format!("DEBUG: Syncing {} new messages from shared to current",
+                            shared_conv.messages.len() - conv.messages.len()));
+                        // Copy ALL messages from shared to current to stay in sync
+                        *conv = shared_conv.clone();
+                    }
+                }
+            }
+        }
+
+        // THEN: Add user message to current_conversation
+        if let Some(ref mut conv) = self.current_conversation {
+            conv.add_user_message(content.to_string());
+
+            // Sync back to shared conversation
+            if let Ok(mut shared) = self.shared_conversation.lock() {
+                if let Some(ref mut shared_conv) = *shared {
+                    shared_conv.add_user_message(content.to_string());
+                }
+            }
+
+            if self.auto_save_conversations {
+                let _ = self.save_conversation();
+            }
+        }
+    }
+
+    /// Track assistant message in conversation
+    pub fn track_assistant_message(&mut self, content: &str) {
+        self.ensure_conversation();
+        if let Some(ref mut conv) = self.current_conversation {
+            conv.add_assistant_message(content.to_string(), None);
+
+            // Sync with shared conversation (don't add if already added by tokio task)
+            if let Ok(mut shared) = self.shared_conversation.lock() {
+                if let Some(ref mut shared_conv) = *shared {
+                    // Copy the entire conversation to shared to keep in sync
+                    *shared_conv = conv.clone();
+                }
+            }
+
+            if self.auto_save_conversations {
+                let _ = self.save_conversation();
+            }
+        }
+    }
+
+    /// Track tool call in conversation
+    pub fn track_tool_call(&mut self, tool_call_id: String, tool_name: String, arguments: String) {
+        self.ensure_conversation();
+        if let Some(ref mut conv) = self.current_conversation {
+            use crate::utils::conversation::ToolCall;
+            use chrono::Utc;
+
+            let tool_call = ToolCall {
+                id: tool_call_id,
+                name: tool_name,
+                arguments,
+                timestamp: Utc::now(),
+            };
+
+            // Find the last assistant message and add tool call to it
+            if let Some(last_msg) = conv.messages.last_mut() {
+                if last_msg.role == "assistant" {
+                    if let Some(ref mut calls) = last_msg.tool_calls {
+                        calls.push(tool_call);
+                    } else {
+                        last_msg.tool_calls = Some(vec![tool_call]);
+                    }
+                }
+            }
+
+            if self.auto_save_conversations {
+                let _ = self.save_conversation();
+            }
+        }
+    }
+
+    /// Track tool result in conversation
+    pub fn track_tool_result(&mut self, tool_call_id: String, tool_name: String, result: serde_json::Value, success: bool, execution_time_ms: u64) {
+        self.ensure_conversation();
+        if let Some(ref mut conv) = self.current_conversation {
+            conv.add_tool_result(tool_call_id, tool_name, result, success, execution_time_ms);
+
+            if self.auto_save_conversations {
+                let _ = self.save_conversation();
+            }
+        }
+    }
+
+    /// Start a new conversation (keeps current messages in memory but starts fresh tracking)
+    pub fn new_conversation(&mut self) {
+        use crate::utils::conversation::Conversation;
+
+        let provider_config = self.config.get_active_provider_config()
+            .expect("Active provider not found");
+        let model = provider_config.model.clone();
+        let provider = self.config.active_provider.clone();
+        let endpoint = provider_config.api_url.clone().unwrap_or_default();
+
+        self.current_conversation = Some(Conversation::new(model, provider, endpoint));
     }
 }
 

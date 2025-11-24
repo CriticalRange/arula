@@ -53,11 +53,94 @@ fn show_main_menu(main_menu: &mut MainMenu, app: &mut App, output: &mut OutputHa
         ui::menus::common::MenuResult::ClearChat => {
             app.clear_conversation();
             output.print_system("Conversation cleared")?;
+            // Start a new conversation after clearing
+            app.new_conversation();
+            Ok(false)
+        }
+        ui::menus::common::MenuResult::Settings => {
+            // Show config menu
+            show_config_menu(config_menu, app, output)?;
             Ok(false)
         }
         ui::menus::common::MenuResult::BackToMain => {
-            // This is the Settings selection - show config menu
-            show_config_menu(config_menu, app, output)?;
+            // Just return to main loop (used by submenus)
+            Ok(false)
+        }
+        ui::menus::common::MenuResult::LoadConversation(conversation_id) => {
+            // Clear screen before loading conversation
+            use crossterm::{execute, terminal};
+            execute!(
+                std::io::stdout(),
+                terminal::Clear(terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
+
+            // Load the selected conversation
+            match app.load_conversation(&conversation_id) {
+                Ok(()) => {
+                    output.print_system(&format!("✓ Loaded conversation: {}", conversation_id))?;
+                    output.print_system("")?;
+
+                    // Display all loaded messages
+                    for msg in &app.messages {
+                        match msg.message_type {
+                            crate::utils::chat::MessageType::User => {
+                                output.print_user_message(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::Arula => {
+                                output.print_ai_message(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::System => {
+                                output.print_system(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::Success => {
+                                output.print_system(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::Error => {
+                                output.print_error(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::Info => {
+                                output.print_system(&msg.content)?;
+                            }
+                            crate::utils::chat::MessageType::ToolCall => {
+                                // Parse and display tool call
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                                    if let (Some(name), Some(args)) = (json.get("name").and_then(|v| v.as_str()), json.get("arguments").and_then(|v| v.as_str())) {
+                                        output.print_system(&format!("🔧 Tool: {} ({})", name, args))?;
+                                    }
+                                } else {
+                                    output.print_system(&msg.content)?;
+                                }
+                            }
+                            crate::utils::chat::MessageType::ToolResult => {
+                                // Parse and display tool result
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                                    if let Some(success) = json.get("success").and_then(|v| v.as_bool()) {
+                                        let icon = if success { "✓" } else { "✗" };
+                                        output.print_system(&format!("  {} Result: {}", icon,
+                                            json.get("message").and_then(|v| v.as_str()).unwrap_or("(no message)")))?;
+                                    }
+                                } else {
+                                    output.print_system(&msg.content)?;
+                                }
+                            }
+                        }
+                    }
+
+                    output.print_system("")?;
+                    output.print_system("─────────────────────────────────────")?;
+                }
+                Err(e) => {
+                    output.print_error(&format!("Failed to load conversation: {}", e))?;
+                }
+            }
+            Ok(false)
+        }
+        ui::menus::common::MenuResult::NewConversation => {
+            // Clear current conversation and start fresh
+            app.clear_conversation();
+            app.new_conversation();
+            output.print_system("✓ Started new conversation")?;
             Ok(false)
         }
         ui::menus::common::MenuResult::Continue => Ok(false),
@@ -337,12 +420,19 @@ async fn main() -> Result<()> {
     // - reedline's read_line() displays them automatically every 100ms
     // - User can type while AI streams responses (full duplex!)
     'main_loop: loop {
+        // FIRST: Process any tracking commands from background tasks
+        // This ensures tracking is up-to-date before doing anything else
+        app.process_tracking_commands();
+
         // Update AI state in prompt based on current status
         if app.is_waiting_for_response() {
             reedline_input.set_ai_state(AiState::Waiting);
         } else {
             reedline_input.set_ai_state(AiState::Ready);
         }
+
+        // Process tracking commands again after state update
+        app.process_tracking_commands();
 
         // Get input from reedline
         // NOTE: read_line() automatically checks ExternalPrinter every 100ms
@@ -413,6 +503,9 @@ async fn main() -> Result<()> {
                 // Update prompt to "thinking" state
                 reedline_input.set_ai_state(AiState::Thinking);
 
+                // Track user message in conversation history
+                app.track_user_message(&input);
+
                 // Send to AI
                 if cli.verbose {
                     output.print_system(&format!("DEBUG: Sending to AI: '{}'", input))?;
@@ -427,6 +520,11 @@ async fn main() -> Result<()> {
                         if cli.verbose {
                             output.print_system("DEBUG: AI request sent successfully")?;
                         }
+
+                        // Process any pending tracking commands immediately after sending
+                        // This ensures previous AI response tracking is saved before new request
+                        app.process_tracking_commands();
+
                         // DON'T wait for response - continue to next read_line()
                         // AI responses will appear via ExternalPrinter while user types next message
                     }

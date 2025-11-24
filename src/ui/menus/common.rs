@@ -19,6 +19,8 @@ pub enum MenuResult {
     ClearChat,
     BackToMain,
     ConfigurationUpdated,
+    LoadConversation(String),
+    NewConversation,
 }
 
 /// Internal menu action for flow control
