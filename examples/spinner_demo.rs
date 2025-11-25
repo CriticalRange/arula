@@ -13,7 +13,7 @@
 //!
 //! Run with: cargo run --example spinner_demo
 
-use arula_cli::custom_spinner::CustomSpinner;
+use arula_cli::CustomSpinner;
 use std::thread;
 use std::time::Duration;
 

@@ -1,0 +1,574 @@
+   Compiling proc-macro2 v1.0.103
+   Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.42
+   Compiling windows-link v0.2.1
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.7.6
+   Compiling windows-sys v0.61.2
+   Compiling smallvec v1.15.1
+   Compiling serde_core v1.0.228
+   Compiling syn v2.0.111
+   Compiling parking_lot_core v0.9.12
+   Compiling once_cell v1.21.3
+   Compiling autocfg v1.5.0
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling crossbeam-utils v0.8.21
+   Compiling stable_deref_trait v1.2.1
+   Compiling pin-project-lite v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling parking_lot v0.12.5
+   Compiling serde v1.0.228
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling crossbeam-epoch v0.9.18
+   Compiling itoa v1.0.15
+   Compiling synstructure v0.13.2
+   Compiling crossbeam-deque v0.8.6
+   Compiling windows-targets v0.53.5
+   Compiling futures-core v0.3.31
+   Compiling windows-sys v0.60.2
+   Compiling either v1.15.0
+   Compiling bytes v1.11.0
+   Compiling find-msvc-tools v0.1.5
+   Compiling rayon-core v1.13.0
+   Compiling shlex v1.3.0
+   Compiling libc v0.2.177
+   Compiling cc v1.2.47
+   Compiling futures-sink v0.3.31
+   Compiling serde_derive v1.0.228
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling simd-adler32 v0.3.7
+   Compiling zerofrom v0.1.6
+   Compiling zerovec-derive v0.11.2
+   Compiling yoke v0.8.1
+   Compiling tokio-macros v2.6.0
+   Compiling socket2 v0.6.1
+   Compiling mio v1.1.0
+   Compiling bitflags v2.10.0
+   Compiling tokio v1.48.0
+   Compiling zerovec v0.11.5
+   Compiling displaydoc v0.2.5
+   Compiling regex-syntax v0.8.8
+   Compiling slab v0.4.11
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.0
+   Compiling zerocopy v0.8.30
+   Compiling miniz_oxide v0.8.9
+   Compiling rayon v1.11.0
+   Compiling zerocopy-derive v0.8.30
+   Compiling futures-channel v0.3.31
+   Compiling tracing-core v0.1.34
+   Compiling log v0.4.28
+   Compiling pin-utils v0.1.0
+   Compiling winapi v0.3.9
+   Compiling futures-macro v0.3.31
+   Compiling futures-io v0.3.31
+   Compiling anyhow v1.0.100
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.16.1
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling unicode-segmentation v1.12.0
+   Compiling thiserror v2.0.17
+   Compiling futures-task v0.3.31
+   Compiling half v2.7.1
+   Compiling futures-util v0.3.31
+   Compiling indexmap v2.12.1
+   Compiling flate2 v1.1.5
+   Compiling tracing v0.1.41
+   Compiling tinystr v0.8.2
+   Compiling thiserror-impl v2.0.17
+   Compiling equator-macro v0.4.2
+   Compiling http v1.4.0
+   Compiling writeable v0.6.2
+   Compiling litemap v0.8.1
+   Compiling ryu v1.0.20
+   Compiling icu_locale_core v2.1.1
+   Compiling equator v0.4.2
+   Compiling convert_case v0.7.1
+   Compiling zerotrie v0.2.3
+   Compiling potential_utf v0.1.4
+   Compiling ring v0.17.14
+   Compiling num-integer v0.1.46
+   Compiling aho-corasick v1.1.4
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_properties_data v2.1.1
+   Compiling percent-encoding v2.3.2
+   Compiling serde_json v1.0.145
+   Compiling weezl v0.1.12
+   Compiling num-bigint v0.4.6
+   Compiling icu_provider v2.1.1
+   Compiling regex-automata v0.4.13
+   Compiling icu_collections v2.1.1
+   Compiling derive_more-impl v2.0.1
+   Compiling windows-targets v0.52.6
+   Compiling http-body v1.0.1
+   Compiling aligned-vec v0.6.4
+   Compiling zeroize v1.8.2
+   Compiling arrayvec v0.7.6
+   Compiling litrs v1.0.0
+   Compiling lazy_static v1.5.0
+   Compiling httparse v1.10.1
+   Compiling anstyle v1.0.13
+   Compiling fnv v1.0.7
+   Compiling document-features v0.2.12
+   Compiling derive_more v2.0.1
+   Compiling rustls-pki-types v1.13.0
+   Compiling v_frame v0.3.9
+   Compiling num-rational v0.4.2
+   Compiling crossterm_winapi v0.9.1
+   Compiling tokio-util v0.7.17
+   Compiling fdeflate v0.3.7
+   Compiling windows-interface v0.59.3
+   Compiling windows-implement v0.60.2
+   Compiling as-slice v0.2.1
+   Compiling getrandom v0.2.16
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling av-scenechange v0.14.1
+   Compiling built v0.8.0
+   Compiling paste v1.0.15
+   Compiling tower-service v0.3.3
+   Compiling color_quant v1.1.0
+   Compiling untrusted v0.9.0
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling windows_x86_64_msvc v0.48.5
+   Compiling base64 v0.22.1
+   Compiling rav1e v0.8.1
+   Compiling want v0.3.1
+   Compiling h2 v0.4.12
+   Compiling windows-core v0.62.2
+   Compiling aligned v0.4.2
+   Compiling icu_properties v2.1.1
+   Compiling icu_normalizer v2.1.1
+   Compiling zune-inflate v0.2.54
+   Compiling arg_enum_proc_macro v0.3.4
+   Compiling profiling-procmacros v1.0.17
+   Compiling winapi-util v0.1.11
+   Compiling core2 v0.4.0
+   Compiling nom v8.0.0
+   Compiling pastey v0.1.1
+   Compiling bytemuck v1.24.0
+   Compiling rustls v0.23.35
+   Compiling httpdate v1.0.3
+   Compiling lebe v0.5.3
+   Compiling quick-error v2.0.1
+   Compiling y4m v0.8.0
+   Compiling once_cell_polyfill v1.70.2
+   Compiling pkg-config v0.3.32
+   Compiling bit_field v0.10.3
+   Compiling heck v0.5.0
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v0.2.7
+   Compiling exr v1.74.0
+   Compiling onig_sys v69.9.1
+   Compiling anstyle-wincon v3.0.11
+   Compiling hyper v1.8.1
+   Compiling qoi v0.4.1
+   Compiling av1-grain v0.2.5
+   Compiling same-file v1.0.6
+   Compiling bitstream-io v4.9.0
+   Compiling profiling v1.0.17
+   Compiling idna_adapter v1.2.1
+   Compiling rustls-webpki v0.103.8
+   Compiling regex v1.12.2
+   Compiling sharded-slab v0.1.7
+   Compiling form_urlencoded v1.2.2
+   Compiling maybe-rayon v0.1.1
+   Compiling fax_derive v0.2.0
+   Compiling num-derive v0.4.2
+   Compiling itertools v0.14.0
+   Compiling anstyle-query v1.1.5
+   Compiling simd_helpers v0.1.0
+   Compiling thread_local v1.1.9
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling ipnet v2.11.0
+   Compiling noop_proc_macro v0.3.0
+   Compiling owo-colors v4.2.3
+   Compiling byteorder v1.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling powerfmt v0.2.0
+   Compiling colorchoice v1.0.4
+   Compiling new_debug_unreachable v1.0.6
+   Compiling getrandom v0.3.4
+   Compiling imgref v1.12.0
+   Compiling rustversion v1.0.22
+   Compiling zune-core v0.4.12
+   Compiling subtle v2.6.1
+   Compiling loop9 v0.1.5
+   Compiling zune-jpeg v0.4.21
+   Compiling anstream v0.6.21
+   Compiling deranged v0.5.5
+   Compiling idna v1.1.0
+   Compiling crossterm v0.29.0
+   Compiling hyper-util v0.1.18
+   Compiling tracing-subscriber v0.3.20
+   Compiling fax v0.2.6
+   Compiling windows-targets v0.48.5
+   Compiling walkdir v2.5.0
+   Compiling avif-serialize v0.8.6
+   Compiling windows-core v0.52.0
+   Compiling futures-executor v0.3.31
+   Compiling jpeg-decoder v0.3.2
+   Compiling itertools v0.13.0
+   Compiling sync_wrapper v1.0.2
+   Compiling pxfm v0.1.25
+   Compiling crossbeam-channel v0.5.15
+   Compiling crossbeam-queue v0.3.12
+   Compiling substring v1.4.5
+   Compiling windows-threading v0.2.1
+   Compiling bitflags v1.3.2
+   Compiling rgb v0.8.52
+   Compiling num-conv v0.1.0
+   Compiling thiserror v1.0.69
+   Compiling unicode-width v0.2.2
+   Compiling eyre v0.6.12
+   Compiling clap_lex v0.7.6
+   Compiling tower-layer v0.3.3
+   Compiling zune-core v0.5.0
+   Compiling time-core v0.1.6
+   Compiling strict v0.2.0
+   Compiling strsim v0.11.1
+   Compiling byteorder-lite v0.1.0
+   Compiling portable-atomic v1.11.1
+   Compiling color-spantrace v0.3.0
+   Compiling image-webp v0.2.4
+   Compiling clap_builder v4.5.53
+   Compiling zune-jpeg v0.5.5
+   Compiling crokey-proc_macros v1.3.0
+   Compiling time v0.3.44
+   Compiling moxcms v0.7.9
+   Compiling tower v0.5.2
+   Compiling ravif v0.12.0
+   Compiling windows-future v0.3.2
+   Compiling png v0.17.16
+   Compiling crossbeam v0.8.4
+   Compiling tiff v0.9.1
+   Compiling windows v0.52.0
+   Compiling futures v0.3.31
+   Compiling lazy-regex-proc_macros v3.4.2
+   Compiling windows-core v0.51.1
+   Compiling tiff v0.10.3
+   Compiling tracing-error v0.2.1
+   Compiling tokio-rustls v0.26.4
+   Compiling url v2.5.7
+   Compiling fxhash v0.2.1
+   Compiling clap_derive v4.5.49
+   Compiling windows-numerics v0.3.1
+   Compiling windows-collections v0.3.2
+   Compiling gif v0.13.3
+   Compiling gif v0.14.0
+   Compiling png v0.18.0
+   Compiling webpki-roots v1.0.4
+   Compiling http-body-util v0.1.3
+   Compiling windows-sys v0.59.0
+   Compiling chrono v0.4.42
+   Compiling thiserror-impl v1.0.69
+   Compiling bstr v1.12.1
+   Compiling vte v0.14.1
+   Compiling quick-xml v0.38.4
+   Compiling indenter v0.3.4
+   Compiling option-ext v0.2.0
+   Compiling widestring v1.2.1
+   Compiling encode_unicode v1.0.0
+   Compiling iri-string v0.7.9
+   Compiling rustc-demangle v0.1.26
+   Compiling linked-hash-map v0.5.6
+   Compiling fastrand v2.3.0
+   Compiling num_cpus v1.17.0
+   Compiling yaml-rust v0.4.5
+   Compiling tempfile v3.23.0
+   Compiling backtrace v0.3.76
+   Compiling tower-http v0.6.7
+   Compiling display-info v0.4.8
+   Compiling plist v1.8.0
+   Compiling console v0.16.1
+   Compiling dirs-sys v0.5.0
+   Compiling strip-ansi-escapes v0.2.1
+   Compiling globset v0.4.18
+   Compiling fd-lock v4.0.4
+   Compiling image v0.25.9
+   Compiling hyper-rustls v0.27.7
+   Compiling clap v4.5.53
+   Compiling image v0.24.9
+   Compiling windows v0.62.2
+   Compiling strum_macros v0.26.4
+   Compiling windows v0.51.1
+   Compiling lazy-regex v3.4.2
+   Compiling onig v6.5.1
+   Compiling crokey v1.3.0
+   Compiling coolor v1.1.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling crossterm v0.28.1
+   Compiling subprocess v0.2.9
+   Compiling bincode v1.3.3
+   Compiling uiautomation_derive v0.7.5
+   Compiling shared_child v1.1.1
+   Compiling os_pipe v1.2.3
+   Compiling nu-ansi-term v0.50.3
+   Compiling minimad v0.14.0
+   Compiling unicode-width v0.1.14
+   Compiling diff v0.1.13
+   Compiling unit-prefix v0.5.2
+   Compiling ciborium-io v0.2.2
+   Compiling shared_thread v0.2.0
+   Compiling plotters-backend v0.3.7
+   Compiling predicates-core v1.0.9
+   Compiling mockall_derive v0.14.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling strum v0.26.3
+   Compiling plotters-svg v0.3.7
+   Compiling reedline v0.43.0
+   Compiling duct v1.1.1
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling ciborium-ll v0.2.2
+   Compiling indicatif v0.18.3
+   Compiling termimad v0.34.1
+   Compiling uiautomation v0.24.2
+   Compiling syntect v5.3.0
+   Compiling rusty-tesseract v1.1.10
+   Compiling reqwest v0.12.24
+   Compiling screenshots v0.8.10
+   Compiling color-eyre v0.6.5
+   Compiling ignore v0.4.25
+   Compiling dirs v6.0.0
+   Compiling tokio-stream v0.1.17
+   Compiling async-trait v0.1.89
+   Compiling memmap2 v0.9.9
+   Compiling mockall v0.14.0
+   Compiling sdd v3.0.10
+   Compiling deadpool-runtime v0.1.4
+   Compiling urlencoding v2.1.3
+   Compiling cast v0.3.0
+   Compiling termtree v0.5.1
+   Compiling criterion-plot v0.6.0
+   Compiling scc v2.4.0
+   Compiling predicates-tree v1.0.12
+   Compiling deadpool v0.12.3
+   Compiling ciborium v0.2.2
+   Compiling plotters v0.3.7
+   Compiling predicates v3.1.3
+   Compiling assert-json-diff v2.0.2
+   Compiling tinytemplate v1.2.1
+   Compiling serial_test_derive v3.2.0
+   Compiling oorandom v11.1.5
+   Compiling fragile v2.0.1
+   Compiling anes v0.1.6
+   Compiling yansi v1.0.1
+   Compiling downcast v0.11.0
+   Compiling pretty_assertions v1.4.1
+   Compiling criterion v0.7.0
+   Compiling serial_test v3.2.0
+   Compiling wiremock v0.6.5
+   Compiling arula-cli v0.1.0 (C:\Users\Ahmet\Documents\arula-cli)
+   Compiling assert_matches v1.5.0
+error[E0063]: missing fields `auto_save_conversations`, `current_conversation`, `external_printer` and 3 other fields in initializer of `app::App`
+    --> src\app.rs:1775:9
+     |
+1775 |         App {
+     |         ^^^ missing `auto_save_conversations`, `current_conversation`, `external_printer` and 3 other fields
+
+error[E0063]: missing fields `auto_save_conversations`, `current_conversation`, `external_printer` and 3 other fields in initializer of `app::App`
+    --> src\app.rs:1849:19
+     |
+1849 |         let app = App {
+     |                   ^^^ missing `auto_save_conversations`, `current_conversation`, `external_printer` and 3 other fields
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1534:24
+     |
+1534 |         assert!(result.contains("bold"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1534 |         assert!(result.composite.compounds.contains("bold"));
+     |                        ++++++++++++++++++++
+1534 |         assert!(result.skin.headers.contains("bold"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1538:24
+     |
+1538 |         assert!(result.contains("italic"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1538 |         assert!(result.composite.compounds.contains("italic"));
+     |                        ++++++++++++++++++++
+1538 |         assert!(result.skin.headers.contains("italic"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1542:24
+     |
+1542 |         assert!(result.contains("code"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1542 |         assert!(result.composite.compounds.contains("code"));
+     |                        ++++++++++++++++++++
+1542 |         assert!(result.skin.headers.contains("code"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1546:24
+     |
+1546 |         assert!(result.contains("strikethrough"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1546 |         assert!(result.composite.compounds.contains("strikethrough"));
+     |                        ++++++++++++++++++++
+1546 |         assert!(result.skin.headers.contains("strikethrough"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1550:24
+     |
+1550 |         assert!(result.contains("*"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1550 |         assert!(result.composite.compounds.contains("*"));
+     |                        ++++++++++++++++++++
+1550 |         assert!(result.skin.headers.contains("*"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1554:24
+     |
+1554 |         assert!(result.contains("link"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1554 |         assert!(result.composite.compounds.contains("link"));
+     |                        ++++++++++++++++++++
+1554 |         assert!(result.skin.headers.contains("link"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1555:24
+     |
+1555 |         assert!(result.contains("url"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1555 |         assert!(result.composite.compounds.contains("url"));
+     |                        ++++++++++++++++++++
+1555 |         assert!(result.skin.headers.contains("url"));
+     |                        +++++++++++++
+
+error[E0599]: no method named `contains` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1559:24
+     |
+1559 |         assert!(result.contains("[^1]"));
+     |                        ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1559 |         assert!(result.composite.compounds.contains("[^1]"));
+     |                        ++++++++++++++++++++
+1559 |         assert!(result.skin.headers.contains("[^1]"));
+     |                        +++++++++++++
+
+error[E0282]: type annotations needed
+    --> src\ui\output.rs:1575:13
+     |
+1575 |         let tag_result = result.unwrap();
+     |             ^^^^^^^^^^
+1576 |         assert_eq!(tag_result.rendered, "text");
+     |                    ---------- type must be known at this point
+     |
+help: consider giving `tag_result` an explicit type
+     |
+1575 |         let tag_result: /* Type */ = result.unwrap();
+     |                       ++++++++++++
+
+error[E0282]: type annotations needed
+    --> src\ui\output.rs:1607:17
+     |
+1607 |             let tag_result = result.unwrap();
+     |                 ^^^^^^^^^^
+1608 |             assert!(tag_result.rendered.contains(expected_content));
+     |                     ---------- type must be known at this point
+     |
+help: consider giving `tag_result` an explicit type
+     |
+1607 |             let tag_result: /* Type */ = result.unwrap();
+     |                           ++++++++++++
+
+error[E0282]: type annotations needed for `std::option::Option<_>`
+    --> src\ui\output.rs:1884:13
+     |
+1884 |         let result = None; // parse_html_tag removed
+     |             ^^^^^^   ---- type must be known at this point
+     |
+help: consider giving `result` an explicit type, where the type for type parameter `T` is specified
+     |
+1884 |         let result: std::option::Option<T> = None; // parse_html_tag removed
+     |                   ++++++++++++++++++++++++
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1899:25
+     |
+1899 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1899 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1899 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1904:25
+     |
+1904 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1904 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1904 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1909:25
+     |
+1909 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1909 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1909 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1914:25
+     |
+1914 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1914 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1914 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+Some errors have detailed explanations: E0063, E0282, E0599.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `arula-cli` (lib test) due to 17 previous errors
+warning: build failed, waiting for other jobs to finish...

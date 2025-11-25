@@ -47,7 +47,7 @@ impl ModelSelector {
         }
 
         // For predefined providers, use dynamic fetching with caching
-        let (mut models, is_loading): (Vec<String>, bool) = match provider.to_lowercase().as_str() {
+        let (models, is_loading): (Vec<String>, bool) = match provider.to_lowercase().as_str() {
             "z.ai coding plan" | "z.ai" | "zai" => {
                 // Clear cache to simulate first-run behavior
                 app.cache_zai_models(Vec::new());
@@ -132,7 +132,6 @@ impl ModelSelector {
         let mut loading_spinner = all_models.len() == 1 && (all_models[0].contains("Loading") || all_models[0].contains("⚡") || all_models[0].contains("Fetching"));
         let mut spinner_counter = 0;
         let mut needs_clear = false; // Track when to clear screen
-        let mut last_selected_idx = selected_idx; // Track scrolling
 
         // State tracking for selective rendering - track actual render state, not calculations
         let mut last_rendered_state: Option<(Vec<String>, usize, String, bool)> = None;
@@ -236,19 +235,21 @@ impl ModelSelector {
             };
 
             if should_render {
-                // Clear screen once if needed (after fetch completes, major changes, or search changed)
-                if needs_clear || search_changed {
+                // Only clear screen for major state changes (search, loading complete, not just selection)
+                let major_change = needs_clear || search_changed ||
+                                   (last_rendered_state.as_ref().map(|s| s.3) != Some(loading_spinner));
+
+                if major_change {
                     stdout().execute(terminal::Clear(terminal::ClearType::All))?;
                     stdout().flush()?;
                     needs_clear = false;
                 }
 
-                // Render the full UI
-                self.render_model_selector_with_search(&filtered_models, selected_idx, &search_query, loading_spinner)?;
+                // Render with partial update flag for minor changes (like selection movement)
+                self.render_model_selector_with_search(&filtered_models, selected_idx, &search_query, loading_spinner, !major_change)?;
 
                 // Update last rendered state
                 last_rendered_state = Some(current_state);
-                last_selected_idx = selected_idx;
             }
 
             if event::poll(Duration::from_millis(100))? {
@@ -263,19 +264,11 @@ impl ModelSelector {
                             KeyCode::Up => {
                                 if selected_idx > 0 && !filtered_models.is_empty() {
                                     selected_idx -= 1;
-                                    if selected_idx != last_selected_idx {
-                                        needs_clear = true; // Clear once when scrolling
-                                        last_selected_idx = selected_idx;
-                                    }
                                 }
                             }
                             KeyCode::Down => {
                                 if selected_idx + 1 < filtered_models.len() {
                                     selected_idx += 1;
-                                    if selected_idx != last_selected_idx {
-                                        needs_clear = true; // Clear once when scrolling
-                                        last_selected_idx = selected_idx;
-                                    }
                                 }
                             }
                             KeyCode::PageUp => {
@@ -284,10 +277,6 @@ impl ModelSelector {
                                 } else {
                                     selected_idx = 0;
                                 }
-                                if selected_idx != last_selected_idx {
-                                    needs_clear = true; // Clear once when scrolling
-                                    last_selected_idx = selected_idx;
-                                }
                             }
                             KeyCode::PageDown => {
                                 if !filtered_models.is_empty() && selected_idx + 10 < filtered_models.len() {
@@ -295,25 +284,13 @@ impl ModelSelector {
                                 } else if !filtered_models.is_empty() {
                                     selected_idx = filtered_models.len() - 1;
                                 }
-                                if selected_idx != last_selected_idx {
-                                    needs_clear = true; // Clear once when scrolling
-                                    last_selected_idx = selected_idx;
-                                }
                             }
                             KeyCode::Home => {
                                 selected_idx = 0;
-                                if selected_idx != last_selected_idx {
-                                    needs_clear = true; // Clear once when scrolling
-                                    last_selected_idx = selected_idx;
-                                }
                             }
                             KeyCode::End => {
                                 if !filtered_models.is_empty() {
                                     selected_idx = filtered_models.len() - 1;
-                                    if selected_idx != last_selected_idx {
-                                        needs_clear = true; // Clear once when scrolling
-                                        last_selected_idx = selected_idx;
-                                    }
                                 }
                             }
                             KeyCode::Enter => {
@@ -377,7 +354,7 @@ impl ModelSelector {
                                     "openrouter" => app.fetch_openrouter_models(),
                                     _ => {}
                                 }
-                                models = vec!["Fetching models...".to_string()];
+                                all_models = vec!["Fetching models...".to_string()];
                                 loading_spinner = true;
                                 spinner_counter = 0; // Reset timeout counter
                             }
@@ -484,7 +461,7 @@ impl ModelSelector {
     }
 
     /// Render model selector with search functionality
-    fn render_model_selector_with_search(&self, models: &[String], selected_idx: usize, search_query: &str, loading: bool) -> Result<()> {
+    fn render_model_selector_with_search(&self, models: &[String], selected_idx: usize, search_query: &str, loading: bool, partial_update: bool) -> Result<()> {
         let (cols, rows) = crossterm::terminal::size()?;
 
         // Calculate layout that fits within terminal height
@@ -518,13 +495,16 @@ impl ModelSelector {
         };
         let viewport_end = std::cmp::min(viewport_start + actual_visible_models, total_models);
 
-        // Display title with search hint
-        let title = if search_query.is_empty() {
-            format!("Select AI Model ({} models)", total_models)
-        } else {
-            format!("Select AI Model ({} of {} filtered)", models.len(), total_models)
-        };
-        self.draw_modern_box(start_x, start_y, menu_width, final_menu_height as u16, &title)?;
+        // Only draw box and title on full render
+        if !partial_update {
+            // Display title with search hint
+            let title = if search_query.is_empty() {
+                format!("Select AI Model ({} models)", total_models)
+            } else {
+                format!("Select AI Model ({} of {} filtered)", models.len(), total_models)
+            };
+            self.draw_modern_box(start_x, start_y, menu_width, final_menu_height as u16, &title)?;
+        }
 
         // Show search input with error state detection
         let search_y = start_y + 1;

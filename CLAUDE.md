@@ -22,28 +22,27 @@ cargo run -- --debug            # Run in debug mode
 **Core Flow**: `main()` → modern input event loop → `app.send_to_ai()` / `app.check_ai_response_nonblocking()`
 
 **Key Modules**:
-- `app.rs`: Application state and AI message handling (~260 lines)
-- `main.rs`: Event loop, command handling, AI response processing
-- `reedline_input.rs`: Modern reedline input handler (CURRENT)
-- `input_handler.rs`: Legacy custom input handler (DEPRECATED)
-- `api.rs`: Traditional AI client with streaming support
-- `agent.rs`: Modern AI agent framework with type-safe tool calling
-- `agent_client.rs`: Client for agent-based AI interactions
-- `tools.rs`: Modern tool implementations (BashTool, etc.)
-- `output.rs`: Colored terminal output to stdout
-- `overlay_menu.rs`: Crossterm-based overlay menu system
-- `reedline_menu.rs`: Reedline-based menu implementation
-- `tool_call.rs`: Legacy bash command extraction from AI responses
-- `config.rs`: YAML-based configuration management
-- `chat.rs`: Chat message types and data structures
-- `visioneer.rs`: Desktop automation and screen analysis (Windows only)
-- `changelog.rs`: Changelog display functionality
+- `app.rs`: Application state and AI message handling (~1870 lines)
+- `main.rs`: Event loop, command handling, AI response processing, menu integration
+- `reedline_input.rs`: Modern reedline input handler with ExternalPrinter support
+- `api/agent.rs`: Modern AI agent framework with type-safe tool calling
+- `api/agent_client.rs`: Client for agent-based AI interactions
+- `api/api.rs`: Traditional AI client with streaming support (legacy compatibility)
+- `tools/tools.rs`: Modern tool implementations (BashTool, etc.)
+- `ui/output.rs`: Colored terminal output to stdout
+- `ui/menus/`: Complete menu system (main, config, conversation, dialogs)
+- `ui/custom_spinner.rs`: Custom orbital spinner animations
+- `utils/config.rs`: Multi-provider YAML/JSON configuration management
+- `utils/chat.rs`: Chat message types and data structures
+- `utils/conversation.rs`: Conversation persistence and loading
+- `utils/changelog.rs`: Real-time changelog display functionality
 
 **Dual AI Architecture**:
 - **Legacy API**: Traditional streaming via `api.rs` for backward compatibility
 - **Modern Agent**: Type-safe tool calling via `agent.rs` and `tools.rs`
 - **AI Streaming**: Uses `tokio::sync::mpsc::unbounded_channel()` for non-blocking responses
-- **Terminal Design**: No alternate screen - all output flows to native scrollback buffer
+- **Full-Duplex Terminal**: `ExternalPrinter` enables AI output while user types with reedline
+- **Native Scrollback**: No alternate screen - all output flows to native terminal buffer
 
 **Multi-Provider AI Support**: Supports OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, and custom providers via `config.rs`
 
@@ -54,22 +53,22 @@ cargo run -- --debug            # Run in debug mode
 
 ## Design Principles
 
-**Core Principles Followed:**
+**Core Principles Followed**:
 
 1. **Single Responsibility Principle (SRP)**
    - Each module has one clear purpose
-   - `output.rs` handles display, `app.rs` handles logic, `overlay_menu.rs` handles menus
-   - Successfully reduced `app.rs` from 2058 lines to ~260 lines
+   - `output.rs` handles display, `app.rs` handles logic, menus handle interactions
+   - Successfully organized from monolithic structure to modular components
 
 2. **Don't Repeat Yourself (DRY)**
    - Extract common patterns into reusable functions
    - `OutputHandler` centralizes all terminal output formatting
+   - Menu system uses shared components in `menus/common.rs`
 
 3. **KISS Principle**
    - Keep code simple and straightforward
-   - Replaced complex ratatui TUI with simple event-driven input loop
-   - Direct stdout printing instead of render buffers
-   - Modern inquire styling without blocking event handling
+   - Direct stdout printing instead of complex render buffers
+   - Modern reedline input with built-in history and completion
 
 4. **Command-Query-Separation (CQS)**
    - Commands perform actions: `send_to_ai()`, `execute_bash_command()`
@@ -77,33 +76,19 @@ cargo run -- --debug            # Run in debug mode
 
 5. **Encapsulation**
    - `OutputHandler` encapsulates colored output
-   - `OverlayMenu` encapsulates menu state and rendering
-   - `ApiClient` encapsulates API communication
+   - Menu encapsulation with state and rendering
+   - `ApiClient`/`AgentClient` encapsulate API communication
 
 ## Implementation Patterns
 
-**AI Streaming**:
+**Full-Duplex AI Streaming**:
 ```rust
-let (tx, rx) = mpsc::unbounded_channel();
-self.ai_response_rx = Some(rx);
-tokio::spawn(async move {
-    match api_client.send_message_stream(&msg, Some(message_history)).await {
-        Ok(mut stream_rx) => {
-            let _ = tx.send(AiResponse::StreamStart);
-            while let Some(response) = stream_rx.recv().await {
-                match response {
-                    StreamingResponse::Chunk(chunk) => {
-                        let _ = tx.send(AiResponse::StreamChunk(chunk));
-                    }
-                    StreamingResponse::End(_) => {
-                        let _ = tx.send(AiResponse::StreamEnd);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-});
+// Create ExternalPrinter for concurrent output while typing
+let external_printer = reedline_input.get_printer_sender();
+app.set_external_printer(external_printer.clone());
+
+// AI responses stream directly to ExternalPrinter while read_line() is active
+// Achieves true full-duplex mode - user can type while AI streams responses
 ```
 
 **Non-blocking Response Check**:
@@ -111,162 +96,277 @@ tokio::spawn(async move {
 // In main loop
 if let Some(response) = app.check_ai_response_nonblocking() {
     match response {
-        AiResponse::StreamStart => output.start_ai_message()?,
-        AiResponse::StreamChunk(chunk) => output.print_streaming_chunk(&chunk)?,
-        AiResponse::StreamEnd => output.end_line()?,
+        AiResponse::AgentStreamStart => output.start_ai_message()?,
+        AiResponse::AgentStreamText(chunk) => output.print_streaming_chunk(&chunk)?,
+        AiResponse::AgentToolCall { id, name, arguments } => {
+            // Handle tool calls automatically via agent framework
+        }
+        AiResponse::AgentStreamEnd => output.end_line()?,
     }
 }
 ```
 
-**Overlay Menu Pattern**:
+**Menu Integration Pattern**:
 ```rust
 // Clear screen, enable raw mode, show menu, restore
 execute!(stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
 terminal::enable_raw_mode()?;
-let result = self.run_main_menu(app, output);
+let result = menu.show(app, output)?;
 terminal::disable_raw_mode()?;
 execute!(stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
 ```
 
-**Adding Menu Options**:
-1. Add option to `options` vector in `run_main_menu()`
-2. Add match arm in `KeyCode::Enter` handler
-3. Implement the option's logic (may call other methods)
-4. Use `show_confirm_dialog()` for confirmations
-
-**Tool Development Pattern**:
+**Modern Tool Development Pattern**:
 ```rust
-// Define tool parameters
+// Define tool parameters with serde
 #[derive(Debug, Deserialize)]
 pub struct MyToolParams {
     pub input: String,
 }
 
-// Implement the tool
-pub struct MyTool;
-impl MyTool {
-    pub async fn execute(params: MyToolParams) -> ToolResult {
-        // Tool implementation
-        ToolResult::success(json!({"result": "success"}))
+// Implement the tool using async_trait
+#[async_trait]
+impl Tool for MyTool {
+    type Params = MyToolParams;
+    type Result = MyResult;
+
+    fn name(&self) -> &str { "my_tool" }
+
+    fn description(&self) -> &str { "Tool description" }
+
+    async fn execute(&self, params: Self::Params) -> Result<Self::Result, String> {
+        // Tool implementation with automatic error handling
     }
 }
 ```
 
+**Reedline Input with Multi-line Support**:
+```rust
+// Validator prevents empty input submission
+impl Validator for ArulaValidator {
+    fn validate(&self, line: &str) -> ValidationResult {
+        if line.trim().is_empty() {
+            ValidationResult::Incomplete  // Prevents empty submission
+        } else {
+            ValidationResult::Complete
+        }
+    }
+}
+
+// Multi-line input with backslash continuation
+// Shift+Enter for new line, Enter to send
+// Ctrl+Space for completion menu
+// ESC/Double-ESC for menu access
+```
+
 ## Configuration
 
-Configuration is handled through YAML files in the user's config directory:
-- Multi-provider support with automatic migration from legacy single-provider format
-- Loaded via `Config::load_or_default()` in `app.rs`
-- Supports API endpoints, model settings, and user preferences
-- Provider-specific settings persistence
-- Uses serde for serialization/deserialization
-- Interactive configuration menu accessible via overlay system
+Multi-provider configuration system with JSON storage and automatic YAML migration:
 
-## Terminal Notes
+**Configuration Structure**:
+- `active_provider`: Currently selected AI provider
+- `providers`: HashMap of provider configurations (OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, custom)
+- Automatic API key detection from environment variables
+- Interactive configuration menu accessible via `/config` or menu system
+- Model caching and background fetching for all providers
 
-- Termux: `export TERM=xterm-256color`
-- Native scrollback enabled - no alternate screen
-- Menu shortcuts: `m`, `menu`, or `/menu`
-- Ctrl+C shows exit confirmation (double press to exit)
-- All output uses console for consistent styling
-- CursorGuard ensures proper cursor cleanup on exit
+**Provider Support**:
+- **OpenAI**: GPT models with official API
+- **Anthropic**: Claude models with official API
+- **Ollama**: Local models with configurable endpoints
+- **Z.AI**: GLM models with coding-optimized endpoints
+- **OpenRouter**: Aggregated access to multiple models
+- **Custom**: User-defined endpoints and models
 
-## Key Libraries
+## Terminal & UI Features
 
-- **reedline**: Modern readline replacement with syntax highlighting and multi-line support
-  - `ExternalPrinter` for concurrent output while typing
-  - `Validator` trait for input validation
-  - `Highlighter` trait for syntax highlighting
-- **nu-ansi-term**: Cross-platform color handling for terminal output
-- **crossterm**: Terminal manipulation (raw mode, cursor, styling)
-- **console**: Colored output with rich styling options
-- **tokio**: Async runtime for AI streaming
-- **reqwest**: HTTP client with rustls-tls (no OpenSSL dependency)
-- **clap**: Command-line argument parsing
-- **memmap2**: Memory-mapped file operations for tools
+**Reedline Integration**:
+- Modern Emacs-style keybindings with full undo/redo
+- Graphical columnar completion menu (Ctrl+Space)
+- Inline history-based hints
+- Context-aware syntax highlighting
+- Dynamic prompt with AI status indicators (⚡🔧▶)
+- Embedded orbital spinner animations
+- Transient prompts (old prompts collapse)
+- ExternalPrinter for concurrent AI output
+- Clipboard integration (Ctrl+V/K/U/W)
+- Multi-line input with prettier continuation (╎)
+- Persistent history with immediate save
+- Bracketed paste support
+
+**Menu System**:
+- **Main Menu**: Conversations, configuration, system status
+- **Config Menu**: Provider switching, model selection, API keys
+- **Conversation Menu**: Load, save, delete conversations
+- **Dialog System**: Confirmations, input prompts, selections
+- Crossterm-based with keyboard navigation
+- Escape key handling and cancel support
+
+**Output Formatting**:
+- Colored terminal output using `console` and `nu-ansi-term`
+- Markdown rendering with `termimad`
+- Syntax highlighting for code blocks with `syntect`
+- Progress indicators and spinners with `indicatif`
+- Tool call formatting with icons and descriptions
+- Error handling with colored error messages
+
+## Conversation System
+
+**Auto-Save Conversations**:
+- Automatic conversation persistence to JSON files
+- Real-time saving from background tokio tasks
+- Shared conversation state between main thread and AI tasks
+- Message history with tool calls and results
+- Title generation from first user message
+- Duration tracking and metadata
+
+**Conversation Loading**:
+- Full conversation restoration with tool calls
+- Message type preservation (User, Assistant, Tool, System)
+- Provider and model metadata
+- Conversation browser and management
+
+## Key Libraries & Dependencies
+
+**Core Dependencies**:
+- **reedline 0.43**: Modern readline replacement with ExternalPrinter for concurrent output
+- **tokio 1.48**: Async runtime with full features for streaming and concurrent tasks
+- **reqwest 0.12**: HTTP client with rustls-tls (no OpenSSL dependency)
+- **serde + serde_json**: Serialization for configuration and conversations
+- **anyhow + color-eyre**: Comprehensive error handling
+- **clap 4.5**: Command-line argument parsing
+
+**UI & Terminal**:
+- **crossterm 0.28**: Cross-platform terminal manipulation
+- **console 0.15**: Colored output with rich styling
+- **nu-ansi-term 0.50**: Cross-platform color handling
+- **termimad 0.20**: Markdown rendering for terminal
+- **syntect 5.0**: Syntax highlighting for code blocks
+- **indicatif 0.17**: Progress bars and spinners
+
+**Tools & File Operations**:
+- **memmap2 0.9**: Memory-mapped file operations
 - **walkdir + ignore**: File system traversal with gitignore support
-- **duct**: Command execution with proper I/O handling
-- **async-trait**: Async trait support for tool interfaces
-- **indicatif**: Progress bars and spinners for loading animations
-- **fastrand**: Simple and fast random number generation
-- **syntect**: Syntax highlighting for code blocks (supports many languages)
-- **termimad**: Markdown rendering for terminal output
-- **serde_yaml**: YAML configuration parsing
-- **base64**: Base64 encoding for vision inputs
-- **windows**: Windows APIs for Visioneer desktop automation (Windows only)
-- **uiautomation**: UI automation framework (Windows only)
-- **screenshots**: Screen capture functionality (Windows only)
+- **duct 0.13**: Command execution with proper I/O handling
+- **async-trait 0.1**: Async trait support for tool interfaces
 
-## Recent Improvements & Fixes
+**Platform-Specific**:
+- **windows 0.58**: Windows APIs for Visioneer desktop automation
+- **uiautomation 0.13**: UI automation framework (Windows only)
+- **screenshots 0.7**: Screen capture functionality (Windows only)
 
-### Empty Input Prevention System (Latest)
-**Problem**: Users could submit empty input to AI by pressing Enter without typing anything.
+## Testing & Benchmarks
 
-**Solution**: Comprehensive multi-layer empty input prevention system:
+**Test Organization**:
+- Unit tests for core components in `src/` modules
+- Integration tests for tool execution
+- Mockall for mocking external dependencies
+- Wiremock for HTTP API testing
+- Criterion benchmarks for performance-critical code
 
-1. **Reedline Validator Level** (`src/ui/reedline_input.rs:235-237`)
-   ```rust
-   if line.trim().is_empty() {
-       ValidationResult::Incomplete  // Prevents submission at source
-   }
-   ```
+**Benchmark Categories**:
+- `config_benchmarks`: Configuration loading and saving performance
+- `chat_benchmarks`: Message processing and conversation management
+- `tools_benchmarks`: Tool execution performance
 
-2. **Multiple Reedline Safety Checks** (`src/ui/reedline_input.rs:637-639, 665-667`)
-   ```rust
-   if buffer.is_empty() || buffer.trim().is_empty() || buffer.chars().all(|c| c.is_whitespace()) {
-       self.editor.run_edit_commands(&[EditCommand::Clear]);  // Clear line to prevent buildup
-       continue;
-   }
-   ```
+## Recent Improvements & Features
 
-3. **Main Loop Final Safety Net** (`src/main.rs:382-387`)
-   ```rust
-   if input.trim().is_empty() {
-       continue 'main_loop;  // Ultimate protection
-   }
-   ```
+### Full-Duplex ExternalPrinter Integration (Latest)
+**Achievement**: True concurrent AI output while user types using reedline's ExternalPrinter
 
-4. **User Escape Mechanism** (`src/ui/reedline_input.rs:370-374`)
-   - `Ctrl+L` keybinding clears input line to escape incomplete state
-   - Users can recover from accidental incomplete states
+**Implementation**:
+- AI responses stream directly to ExternalPrinter while `read_line()` is active
+- User can type next message while AI is still responding
+- Automatic markdown rendering and tool call formatting
+- No more blocking - fully responsive terminal experience
 
-**Benefits**:
-- ✅ Zero empty input reaches AI
-- ✅ Clean user experience with no unwanted multiline behavior
-- ✅ Preserves legitimate multiline (trailing backslash)
-- ✅ Multiple safety nets ensure robustness
-- ✅ Debug visibility for troubleshooting
+### Reedline Modern Input System
+**Features**:
+- Multi-line input with Shift+Enter continuation
+- Graphical completion menu with Ctrl+Space
+- Dynamic prompt with AI status indicators and spinner
+- History search and navigation
+- Empty input prevention with comprehensive validation
+- Escape mechanism (Ctrl+L) for incomplete states
 
-### Terminal Scroll Positioning (Documented)
-**Current Issue**: When AI responses stream through reedline's `ExternalPrinter`, terminal may not scroll optimally to keep input visible at bottom.
+### Comprehensive Menu System
+**Structure**:
+- Modular menu system with common components
+- Interactive configuration with provider switching
+- Conversation management with save/load
+- Real-time model fetching and caching
+- Keyboard navigation and accessibility
 
-**Status**: Documented for future comprehensive solution
-- Multiple terminal escape sequence approaches attempted
-- Issue tracked in `src/app.rs:499-501` with TODO comment
-- Clean implementation ready for future improvements
+### Multi-Provider AI Architecture
+**Providers**:
+- OpenAI GPT models with official API integration
+- Anthropic Claude models with streaming support
+- Ollama local models with configurable endpoints
+- Z.AI GLM models optimized for coding
+- OpenRouter aggregated model access
+- Custom provider support for any OpenAI-compatible endpoint
 
-## TODO: Future Enhancements
+### Advanced Configuration Management
+**Features**:
+- JSON-based configuration with automatic YAML migration
+- Environment variable integration for API keys
+- Provider-specific defaults and model detection
+- Background model fetching with caching
+- Interactive configuration interface
 
-### UI/UX Improvements
-- [x] Progress indicators with spinners (using `indicatif` and console built-in)
-- [x] Formatted code blocks with syntax highlighting (using `syntect`)
-- [x] Syntax highlighting for AI responses (using `syntect`)
-- [x] Better markdown rendering (using `termimad`)
-- [x] Multi-line input support (Shift+Enter for new line, Enter to send)
-- [x] Enhanced input prompt with status indicators (⚡🔧▶ states)
-- [x] Token count display with color-coded warnings
-- [x] Real-time changelog display in startup banner
-- [x] Empty input prevention system with comprehensive validation
-- [x] Multi-layer input validation with escape mechanisms
-- [ ] Message history browser
-- [ ] Terminal scroll positioning optimization for better AI response visibility
+### Tool Framework
+**Implementation**:
+- Type-safe tool calling with async execution
+- Automatic parameter validation and error handling
+- Extensible tool system with schema definitions
+- Built-in tools: bash execution, file operations, search
+- Windows-specific Visioneer desktop automation
 
-### Features
-- [x] Multi-provider AI support (OpenAI, Anthropic, Ollama, Z.AI, OpenRouter, custom)
-- [x] Interactive configuration menu with provider switching
-- [x] Desktop automation (Visioneer) for Windows systems
-- [x] Function/tool calling support with 5 built-in tools
-- [x] Image input support (base64 encoding for vision models)
-- [ ] Save/load conversation sessions
-- [ ] Export conversations to markdown
-- [ ] Custom system prompts
+## Development Patterns
+
+**Error Handling**:
+- Comprehensive error handling with `anyhow` and `color-eyre`
+- Graceful degradation for network failures
+- User-friendly error messages with context
+- Debug logging with `ARULA_DEBUG` environment variable
+
+**Async Architecture**:
+- Non-blocking AI response handling
+- Background model fetching
+- Concurrent tool execution
+- Shared state management with Arc<Mutex<>>
+
+**Code Organization**:
+- Modular structure with clear separation of concerns
+- Feature-based organization in `src/` subdirectories
+- Reusable components and utilities
+- Comprehensive documentation and examples
+
+## Performance Considerations
+
+**Optimizations**:
+- Connection pooling for HTTP requests
+- Model caching to avoid repeated API calls
+- Memory-mapped file operations for large files
+- Async tool execution to prevent blocking
+- Efficient terminal rendering with minimal redraws
+
+**Memory Management**:
+- Careful lifetime management for long-running operations
+- Shared state with Arc<Mutex<>> for thread safety
+- Cleanup of resources and cancellation tokens
+- Proper channel handling for streaming responses
+
+## Debugging & Troubleshooting
+
+**Debug Mode**:
+- Run with `--debug` flag or set `ARULA_DEBUG=1`
+- Detailed logging of AI interactions and tool calls
+- Request/response logging to `.arula/debug.log`
+- Terminal state debugging and cursor management
+
+**Common Issues**:
+- Empty input prevention with multiple safety nets
+- Terminal scroll positioning for AI responses
+- Model caching and background updates
+- Configuration migration and validation

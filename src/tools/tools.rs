@@ -6,7 +6,6 @@ use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command as TokioCommand;
 use console::style;
-use base64::Engine;
 
 /// Parameters for the bash tool
 #[derive(Debug, Deserialize)]
@@ -559,7 +558,7 @@ fn format_colored_diff(old_content: &str, new_content: &str) -> String {
                     style(removed).red()
                 ));
             }
-            diff::Result::Both(unchanged, _) => {
+            diff::Result::Both(_unchanged, _) => {
                 // Skip unchanged lines - only show actual changes
             }
             diff::Result::Right(added) => {
@@ -2204,7 +2203,7 @@ async fn get_dominant_color(&self, img: &Mat, rect: &Rect) -> Result<String, Str
     }
 
     /// Real click execution with element finding using OCR and UI automation
-    async fn execute_click(&self, target: &str, click_target: ClickTarget, button: Option<ClickButton>, double_click: bool) -> Result<VisioneerResult, String> {
+    async fn execute_click(&self, _target: &str, click_target: ClickTarget, button: Option<ClickButton>, double_click: bool) -> Result<VisioneerResult, String> {
         let start_time = std::time::Instant::now();
 
         #[cfg(target_os = "windows")]
@@ -2462,7 +2461,7 @@ async fn get_dominant_color(&self, img: &Mat, rect: &Rect) -> Result<String, Str
         }
     }
 
-    async fn execute_type(&self, target: &str, text: &str, clear_first: bool, delay_ms: u32) -> Result<VisioneerResult, String> {
+    async fn execute_type(&self, _target: &str, text: &str, clear_first: bool, delay_ms: u32) -> Result<VisioneerResult, String> {
         let start_time = std::time::Instant::now();
 
         #[cfg(target_os = "windows")]
@@ -2907,7 +2906,7 @@ async fn get_dominant_color(&self, img: &Mat, rect: &Rect) -> Result<String, Str
         }
     }
 
-    async fn execute_navigate(&self, target: &str, direction: NavigationDirection, distance: u32, steps: u32) -> Result<VisioneerResult, String> {
+    async fn execute_navigate(&self, _target: &str, direction: NavigationDirection, distance: u32, steps: u32) -> Result<VisioneerResult, String> {
         let start_time = std::time::Instant::now();
 
         #[cfg(target_os = "windows")]
@@ -2919,6 +2918,10 @@ async fn get_dominant_color(&self, img: &Mat, rect: &Rect) -> Result<String, Str
                 NavigationDirection::Down => (0, 1),
                 NavigationDirection::Left => (-1, 0),
                 NavigationDirection::Right => (1, 0),
+                NavigationDirection::UpLeft => (-1, -1),
+                NavigationDirection::UpRight => (1, -1),
+                NavigationDirection::DownLeft => (-1, 1),
+                NavigationDirection::DownRight => (1, 1),
             };
 
             let _step_size = distance / steps;
@@ -3777,10 +3780,10 @@ impl QuestionTool {
     /// Show a simple question dialog matching the existing menu style
     fn show_question_dialog(&self, params: &QuestionParams) -> Result<String, String> {
         use crossterm::{
-            cursor::{Hide, Show},
+            cursor::{Hide},
             event::{self, Event, KeyCode, KeyEventKind},
             style::{Color, Print, ResetColor, SetForegroundColor, SetBackgroundColor},
-            terminal::{self, Clear, ClearType},
+            terminal,
             ExecutableCommand, QueueableCommand,
         };
         use std::io::{stdout, Write};
@@ -4121,8 +4124,7 @@ impl QuestionTool {
             style::{Color, Print, ResetColor, SetForegroundColor},
             QueueableCommand,
         };
-        use std::io::Write;
-
+        
         // Simple box with rounded corners (matching overlay_menu)
         let top_left = "╭";
         let top_right = "╮";

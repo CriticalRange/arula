@@ -1,0 +1,581 @@
+   Compiling arula-cli v0.1.0 (C:\Users\Ahmet\Documents\arula-cli)
+error: expected one of `(`, `+`, `,`, `::`, `:`, `<`, or `>`, found `=`
+   --> tests\mocks.rs:207:114
+    |
+199 | impl super::HttpClient for MockHttpClient {
+    |                                           - while parsing this item list starting here
+...
+207 |     async fn post_json_stream(&self, url: &str, _body: &serde_json::Value) -> Result<Box<dyn tokio::stream::Item = Result<String, anyhow:...
+    |                                                                                                                  ^ expected one of 7 possible tokens
+...
+225 | }
+    | - the item list ends here
+    |
+help: you might have meant to end the type parameters here
+    |
+207 |     async fn post_json_stream(&self, url: &str, _body: &serde_json::Value) -> Result<Box<dyn tokio::stream::Item> = Result<String, anyhow::Error>> + Send + Unpin, anyhow::Error> {
+    |                                                                                                                 +
+
+error: expected `,`
+  --> tests\mocks.rs:41:131
+   |
+41 | ...   async fn send_message_stream(&self, message: &str, history: &[EnhancedChatMessage]) -> Result<Box<dyn tokio::stream::Item = Result<...
+   |                                                                                                                                 ^
+
+error[E0428]: the name `MockProcessExecutor` is defined multiple times
+   --> tests\mocks.rs:228:1
+    |
+ 58 | mock! {
+    | ----- previous definition of the type `MockProcessExecutor` here
+...
+228 | pub struct MockProcessExecutor {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `MockProcessExecutor` redefined here
+    |
+    = note: `MockProcessExecutor` must be defined only once in the type namespace of this module
+
+error: expected `,`
+  --> tests\mocks.rs:74:117
+   |
+74 | ...   async fn post_json_stream(&self, url: &str, body: &serde_json::Value) -> Result<Box<dyn tokio::stream::Item = Result<String, anyhow...
+   |                                                                                                                   ^
+
+error[E0428]: the name `MockTimeProvider` is defined multiple times
+   --> tests\mocks.rs:286:1
+    |
+ 79 | mock! {
+    | ----- previous definition of the type `MockTimeProvider` here
+...
+286 | pub struct MockTimeProvider {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `MockTimeProvider` redefined here
+    |
+    = note: `MockTimeProvider` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `MockInputHandler` is defined multiple times
+   --> tests\mocks.rs:325:1
+    |
+ 88 | mock! {
+    | ----- previous definition of the type `MockInputHandler` here
+...
+325 | pub struct MockInputHandler {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `MockInputHandler` redefined here
+    |
+    = note: `MockInputHandler` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `MockMenuHandler` is defined multiple times
+   --> tests\mocks.rs:390:1
+    |
+100 | mock! {
+    | ----- previous definition of the type `MockMenuHandler` here
+...
+390 | pub struct MockMenuHandler {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `MockMenuHandler` redefined here
+    |
+    = note: `MockMenuHandler` must be defined only once in the type namespace of this module
+
+error: expected `,`
+   --> tests\mocks.rs:207:114
+    |
+207 |     async fn post_json_stream(&self, url: &str, _body: &serde_json::Value) -> Result<Box<dyn tokio::stream::Item = Result<String, anyhow:...
+    |                                                                                                                  ^
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+ --> tests\mocks.rs:3:5
+  |
+3 | use super::*;
+  |     ^^^^^ there are too many leading `super` keywords
+
+error[E0432]: unresolved import `arula_cli::test_utils`
+ --> benches\chat_benchmarks.rs:5:16
+  |
+5 | use arula_cli::test_utils::ChatFactory;
+  |                ^^^^^^^^^^ could not find `test_utils` in `arula_cli`
+
+error[E0432]: unresolved import `arula_cli::custom_spinner`
+  --> examples\spinner_demo.rs:16:16
+   |
+16 | use arula_cli::custom_spinner::CustomSpinner;
+   |                ^^^^^^^^^^^^^^ could not find `custom_spinner` in `arula_cli`
+
+warning: unused import: `MessageType`
+ --> benches\chat_benchmarks.rs:4:36
+  |
+4 | use arula_cli::chat::{ChatMessage, MessageType, EnhancedChatMessage, ChatRole};
+  |                                    ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `arula-cli` (example "spinner_demo") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0308]: mismatched types
+   --> benches\chat_benchmarks.rs:27:27
+    |
+ 27 |                 black_box("Execute command"),
+    |                 --------- ^^^^^^^^^^^^^^^^^ expected `String`, found `&str`
+    |                 |
+    |                 arguments to this function are incorrect
+    |
+help: the return type of this call is `&'static str` due to the type of the argument passed
+   --> benches\chat_benchmarks.rs:27:17
+    |
+ 27 |                 black_box("Execute command"),
+    |                 ^^^^^^^^^^-----------------^
+    |                           |
+    |                           this argument influences the return type of `black_box`
+note: function defined here
+   --> C:\Users\Ahmet\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\hint.rs:471:14
+    |
+471 | pub const fn black_box<T>(dummy: T) -> T {
+    |              ^^^^^^^^^
+help: try using a conversion method
+    |
+ 27 |                 black_box("Execute command".to_string()),
+    |                                            ++++++++++++
+
+error[E0308]: mismatched types
+   --> benches\chat_benchmarks.rs:28:27
+    |
+ 28 |                 black_box(r#"{"name": "bash_tool", "arguments": "echo hello"}"#),
+    |                 --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `String`, found `&str`
+    |                 |
+    |                 arguments to this function are incorrect
+    |
+help: the return type of this call is `&'static str` due to the type of the argument passed
+   --> benches\chat_benchmarks.rs:28:17
+    |
+ 28 |                 black_box(r#"{"name": "bash_tool", "arguments": "echo hello"}"#),
+    |                 ^^^^^^^^^^-----------------------------------------------------^
+    |                           |
+    |                           this argument influences the return type of `black_box`
+note: function defined here
+   --> C:\Users\Ahmet\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\hint.rs:471:14
+    |
+471 | pub const fn black_box<T>(dummy: T) -> T {
+    |              ^^^^^^^^^
+help: try using a conversion method
+    |
+ 28 |                 black_box(r#"{"name": "bash_tool", "arguments": "echo hello"}"#.to_string()),
+    |                                                                                ++++++++++++
+
+error[E0282]: type annotations needed
+    --> src\ui\output.rs:1559:13
+     |
+1559 |         let tag_result = result.unwrap();
+     |             ^^^^^^^^^^
+1560 |         assert_eq!(tag_result.rendered, "text");
+     |                    ---------- type must be known at this point
+     |
+help: consider giving `tag_result` an explicit type
+     |
+1559 |         let tag_result: /* Type */ = result.unwrap();
+     |                       ++++++++++++
+
+error[E0282]: type annotations needed
+    --> src\ui\output.rs:1591:17
+     |
+1591 |             let tag_result = result.unwrap();
+     |                 ^^^^^^^^^^
+1592 |             assert!(tag_result.rendered.contains(expected_content));
+     |                     ---------- type must be known at this point
+     |
+help: consider giving `tag_result` an explicit type
+     |
+1591 |             let tag_result: /* Type */ = result.unwrap();
+     |                           ++++++++++++
+
+error[E0599]: no function or associated item named `new_tool_result` found for struct `arula_cli::chat::ChatMessage` in the current scope
+   --> benches\chat_benchmarks.rs:168:36
+    |
+168 |     conversation.push(ChatMessage::new_tool_result(
+    |                                    ^^^^^^^^^^^^^^^ function or associated item not found in `arula_cli::chat::ChatMessage`
+    |
+note: if you're trying to build a new `arula_cli::chat::ChatMessage` consider using one of the following associated functions:
+      arula_cli::chat::ChatMessage::new
+      arula_cli::chat::ChatMessage::new_tool_call
+      arula_cli::chat::ChatMessage::new_user_message
+      arula_cli::chat::ChatMessage::new_arula_message
+      and 2 others
+   --> C:\Users\Ahmet\Documents\arula-cli\src\utils\chat.rs:85:5
+    |
+ 85 |     pub fn new(message_type: MessageType, content: String) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 94 |     pub fn new_tool_call(content: String, tool_call_json: String) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+104 |     pub fn new_user_message(content: &str) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+108 |     pub fn new_arula_message(content: &str) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `new_tool_call` with a similar name
+   --> C:\Users\Ahmet\Documents\arula-cli\src\utils\chat.rs:94:5
+    |
+ 94 |     pub fn new_tool_call(content: String, tool_call_json: String) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0282]: type annotations needed for `std::option::Option<_>`
+    --> src\ui\output.rs:1868:13
+     |
+1868 |         let result = None; // parse_html_tag removed
+     |             ^^^^^^   ---- type must be known at this point
+     |
+help: consider giving `result` an explicit type, where the type for type parameter `T` is specified
+     |
+1868 |         let result: std::option::Option<T> = None; // parse_html_tag removed
+     |                   ++++++++++++++++++++++++
+
+error[E0277]: `&&Vec<arula_cli::chat::ChatMessage>` is not an iterator
+   --> benches\chat_benchmarks.rs:174:28
+    |
+174 |             for message in &black_box(&conversation) {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^ `&&Vec<arula_cli::chat::ChatMessage>` is not an iterator
+    |
+    = help: the trait `Iterator` is not implemented for `&&Vec<arula_cli::chat::ChatMessage>`
+    = note: required for `&&Vec<arula_cli::chat::ChatMessage>` to implement `IntoIterator`
+help: consider removing the leading `&`-reference
+    |
+174 -             for message in &black_box(&conversation) {
+174 +             for message in black_box(&conversation) {
+    |
+
+error[E0277]: `&&Vec<arula_cli::chat::ChatMessage>` is not an iterator
+   --> benches\chat_benchmarks.rs:184:28
+    |
+184 |             for message in &black_box(&conversation) {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^ `&&Vec<arula_cli::chat::ChatMessage>` is not an iterator
+    |
+    = help: the trait `Iterator` is not implemented for `&&Vec<arula_cli::chat::ChatMessage>`
+    = note: required for `&&Vec<arula_cli::chat::ChatMessage>` to implement `IntoIterator`
+help: consider removing the leading `&`-reference
+    |
+184 -             for message in &black_box(&conversation) {
+184 +             for message in black_box(&conversation) {
+    |
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1883:25
+     |
+1883 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1883 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1883 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+Some errors have detailed explanations: E0277, E0308, E0432, E0599.
+For more information about an error, try `rustc --explain E0277`.
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1888:25
+     |
+1888 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1888 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1888 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+warning: `arula-cli` (bench "chat_benchmarks") generated 1 warning
+error: could not compile `arula-cli` (bench "chat_benchmarks") due to 6 previous errors; 1 warning emitted
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1893:25
+     |
+1893 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1893 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1893 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+error[E0599]: no method named `is_empty` found for struct `FmtInline<'k, 's>` in the current scope
+    --> src\ui\output.rs:1898:25
+     |
+1898 |         assert!(!result.is_empty());
+     |                         ^^^^^^^^ method not found in `FmtInline<'_, '_>`
+     |
+help: some of the expressions' fields have a method of the same name
+     |
+1898 |         assert!(!result.composite.compounds.is_empty());
+     |                         ++++++++++++++++++++
+1898 |         assert!(!result.skin.bold.object_style.attributes.is_empty());
+     |                         ++++++++++++++++++++++++++++++++++
+
+error[E0106]: missing lifetime specifier
+  --> tests\mocks.rs:63:64
+   |
+63 |         async fn execute_command(&self, command: &str, args: &[&str]) -> Result<std::process::Output, anyhow::Error>;
+   |                                                                ^ expected named lifetime parameter
+   |
+   = note: for more information on higher-ranked polymorphism, visit https://doc.rust-lang.org/nomicon/hrtb.html
+help: consider making the bound lifetime-generic with a new `'a` lifetime
+   |
+58 ~ for<'a> mock! {
+59 |     pub ProcessExecutor {}
+...
+62 |     impl super::ProcessExecutor for ProcessExecutor {
+63 ~         async fn execute_command(&self, command: &str, args: &[&'a str]) -> Result<std::process::Output, anyhow::Error>;
+   |
+help: consider introducing a named lifetime parameter
+   |
+63 ~         async fn execute_command(&self, command: &str, args: &[&'a str]) -> Result<std::process::Output, anyhow::Error>;
+64 |         async fn execute_command_with_input(&self, command: &str, args: &[&str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+65 |     }
+66 ~ }<'a>
+   |
+
+error[E0637]: `&` without an explicit lifetime name cannot be used here
+  --> tests\mocks.rs:63:64
+   |
+63 |         async fn execute_command(&self, command: &str, args: &[&str]) -> Result<std::process::Output, anyhow::Error>;
+   |                                                                ^ explicit lifetime name needed here
+   |
+help: consider introducing a higher-ranked lifetime here
+   |
+58 ~ for<'a> mock! {
+59 |     pub ProcessExecutor {}
+...
+62 |     impl super::ProcessExecutor for ProcessExecutor {
+63 ~         async fn execute_command(&self, command: &str, args: &[&'a str]) -> Result<std::process::Output, anyhow::Error>;
+   |
+
+error[E0106]: missing lifetime specifier
+  --> tests\mocks.rs:64:75
+   |
+64 | ...   async fn execute_command_with_input(&self, command: &str, args: &[&str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+   |                                                                         ^ expected named lifetime parameter
+   |
+help: consider making the bound lifetime-generic with a new `'a` lifetime
+   |
+58 ~ for<'a> mock! {
+59 |     pub ProcessExecutor {}
+...
+63 |         async fn execute_command(&self, command: &str, args: &[&str]) -> Result<std::process::Output, anyhow::Error>;
+64 ~         async fn execute_command_with_input(&self, command: &str, args: &[&'a str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+   |
+help: consider introducing a named lifetime parameter
+   |
+64 ~         async fn execute_command_with_input(&self, command: &str, args: &[&'a str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+65 |     }
+66 ~ }<'a>
+   |
+
+error[E0637]: `&` without an explicit lifetime name cannot be used here
+  --> tests\mocks.rs:64:75
+   |
+64 | ...   async fn execute_command_with_input(&self, command: &str, args: &[&str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+   |                                                                         ^ explicit lifetime name needed here
+   |
+help: consider introducing a higher-ranked lifetime here
+   |
+58 ~ for<'a> mock! {
+59 |     pub ProcessExecutor {}
+...
+63 |         async fn execute_command(&self, command: &str, args: &[&str]) -> Result<std::process::Output, anyhow::Error>;
+64 ~         async fn execute_command_with_input(&self, command: &str, args: &[&'a str], input: &[u8]) -> Result<std::process::Output, anyhow::Error>;
+   |
+
+Some errors have detailed explanations: E0282, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error[E0412]: cannot find type `ChatRole` in this scope
+  --> tests\mocks.rs:16:49
+   |
+16 |         async fn print_message(&mut self, role: ChatRole, content: &str) -> std::io::Result<()>;
+   |                                                 ^^^^^^^^ not found in this scope
+   |
+   = help: consider importing this enum:
+           arula_cli::chat::ChatRole
+
+error: could not compile `arula-cli` (lib test) due to 7 previous errors
+error[E0412]: cannot find type `ChatRole` in this scope
+  --> tests\mocks.rs:16:49
+   |
+16 |         async fn print_message(&mut self, role: ChatRole, content: &str) -> std::io::Result<()>;
+   |                                                 ^^^^^^^^ not found in this scope
+   |
+help: consider importing this enum
+   |
+ 3 + use arula_cli::chat::ChatRole;
+   |
+
+error[E0433]: failed to resolve: unresolved import
+  --> tests\mocks.rs:29:54
+   |
+29 |         async fn load_config(&self) -> Result<crate::config::Config, anyhow::Error>;
+   |                                                      ^^^^^^
+   |                                                      |
+   |                                                      unresolved import
+   |                                                      help: a similar path exists: `color_eyre::config`
+   |
+   = help: consider importing this module:
+           arula_cli::utils::config
+
+error[E0433]: failed to resolve: unresolved import
+  --> tests\mocks.rs:30:53
+   |
+30 |         async fn save_config(&self, config: &crate::config::Config) -> Result<(), anyhow::Error>;
+   |                                                     ^^^^^^
+   |                                                     |
+   |                                                     unresolved import
+   |                                                     help: a similar path exists: `color_eyre::config`
+   |
+   = help: consider importing this module:
+           arula_cli::utils::config
+
+error[E0433]: failed to resolve: unresolved import
+  --> tests\mocks.rs:29:54
+   |
+29 |         async fn load_config(&self) -> Result<crate::config::Config, anyhow::Error>;
+   |                                                      ^^^^^^ unresolved import
+   |
+help: a similar path exists
+   |
+29 |         async fn load_config(&self) -> Result<crate::color_eyre::config::Config, anyhow::Error>;
+   |                                                        ++++++++++++
+help: consider importing this module
+   |
+ 3 + use arula_cli::utils::config;
+   |
+help: if you import `config`, refer to it directly
+   |
+29 -         async fn load_config(&self) -> Result<crate::config::Config, anyhow::Error>;
+29 +         async fn load_config(&self) -> Result<config::Config, anyhow::Error>;
+   |
+
+error[E0433]: failed to resolve: unresolved import
+  --> tests\mocks.rs:30:53
+   |
+30 |         async fn save_config(&self, config: &crate::config::Config) -> Result<(), anyhow::Error>;
+   |                                                     ^^^^^^ unresolved import
+   |
+help: a similar path exists
+   |
+30 |         async fn save_config(&self, config: &crate::color_eyre::config::Config) -> Result<(), anyhow::Error>;
+   |                                                       ++++++++++++
+help: consider importing this module
+   |
+ 3 + use arula_cli::utils::config;
+   |
+help: if you import `config`, refer to it directly
+   |
+30 -         async fn save_config(&self, config: &crate::config::Config) -> Result<(), anyhow::Error>;
+30 +         async fn save_config(&self, config: &config::Config) -> Result<(), anyhow::Error>;
+   |
+
+error[E0412]: cannot find type `MenuSelection` in this scope
+   --> tests\mocks.rs:105:54
+    |
+105 |         async fn show_main_menu(&mut self) -> Result<MenuSelection, anyhow::Error>;
+    |                                                      ^^^^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `MenuSelection` in this scope
+   --> tests\mocks.rs:391:31
+    |
+391 |     selections: Arc<Mutex<Vec<MenuSelection>>>,
+    |                               ^^^^^^^^^^^^^ not found in this scope
+    |
+help: you might be missing a type parameter
+    |
+390 | pub struct MockMenuHandler<MenuSelection> {
+    |                           +++++++++++++++
+
+error[E0412]: cannot find type `MenuSelection` in this scope
+   --> tests\mocks.rs:405:50
+    |
+405 |     pub async fn add_selection(&self, selection: MenuSelection) {
+    |                                                  ^^^^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `MenuSelection` in this scope
+   --> tests\mocks.rs:429:50
+    |
+429 |     async fn show_main_menu(&mut self) -> Result<MenuSelection, anyhow::Error> {
+    |                                                  ^^^^^^^^^^^^^ not found in this scope
+    |
+help: you might be missing a type parameter
+    |
+428 | impl<MenuSelection> super::MenuHandler for MockMenuHandler {
+    |     +++++++++++++++
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:15:10
+   |
+15 |     impl super::OutputHandler for OutputHandler {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:28:10
+   |
+28 |     impl super::ConfigManager for ConfigManager {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:49:10
+   |
+49 |     impl super::FileSystem for FileSystem {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:62:10
+   |
+62 |     impl super::ProcessExecutor for ProcessExecutor {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:82:10
+   |
+82 |     impl super::TimeProvider for TimeProvider {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+  --> tests\mocks.rs:92:10
+   |
+92 |     impl super::InputHandler for InputHandler {
+   |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:104:10
+    |
+104 |     impl super::MenuHandler for MenuHandler {
+    |          ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:135:6
+    |
+135 | impl super::FileSystem for InMemoryFileSystem {
+    |      ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:260:6
+    |
+260 | impl super::ProcessExecutor for MockProcessExecutor {
+    |      ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:308:6
+    |
+308 | impl super::TimeProvider for MockTimeProvider {
+    |      ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:363:6
+    |
+363 | impl super::InputHandler for MockInputHandler {
+    |      ^^^^^ there are too many leading `super` keywords
+
+error[E0433]: failed to resolve: there are too many leading `super` keywords
+   --> tests\mocks.rs:428:6
+    |
+428 | impl super::MenuHandler for MockMenuHandler {
+    |      ^^^^^ there are too many leading `super` keywords
+
+Some errors have detailed explanations: E0106, E0412, E0428, E0433, E0637.
+For more information about an error, try `rustc --explain E0106`.
+error: could not compile `arula-cli` (test "mocks") due to 35 previous errors

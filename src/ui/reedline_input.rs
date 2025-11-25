@@ -194,7 +194,7 @@ impl Prompt for ArulaPrompt {
 pub struct ArulaTransientPrompt;
 
 impl Prompt for ArulaTransientPrompt {
-    fn render_prompt_left(&self) -> Cow<str> {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
         Cow::Borrowed("❯")
     }
 

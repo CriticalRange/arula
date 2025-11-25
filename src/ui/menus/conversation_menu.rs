@@ -9,6 +9,7 @@ use crossterm::{
     ExecutableCommand, QueueableCommand,
 };
 use std::io::{stdout, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use console::style;
 use chrono::{DateTime, Utc};
@@ -22,6 +23,8 @@ pub struct ConversationMenu {
     selected_index: usize,
     conversations: Vec<ConversationSummary>,
     scroll_offset: usize,
+    is_loading: bool,
+    spinner_counter: usize,
 }
 
 impl ConversationMenu {
@@ -30,6 +33,8 @@ impl ConversationMenu {
             selected_index: 0,
             conversations: Vec::new(),
             scroll_offset: 0,
+            is_loading: true,
+            spinner_counter: 0,
         }
     }
 
@@ -69,14 +74,40 @@ impl ConversationMenu {
 
     /// Show the conversation selector menu
     pub fn show(&mut self, _app: &mut App, _output: &mut OutputHandler) -> Result<MenuResult> {
-        // Load conversation list
-        let current_dir = std::env::current_dir()?;
-        self.conversations = Conversation::list_all(&current_dir)?;
-
         // Clear screen once when entering
         stdout().execute(terminal::Clear(ClearType::All))?;
 
-        let result = self.run_selector()?;
+        // Start loading conversations in background
+        self.is_loading = true;
+        self.spinner_counter = 0;
+        let current_dir = std::env::current_dir()?;
+
+        // Shared state for background loading
+        let conversations_shared = Arc::new(Mutex::new(Vec::new()));
+        let conversations_clone = conversations_shared.clone();
+        let is_loading_shared = Arc::new(Mutex::new(true));
+        let is_loading_clone = is_loading_shared.clone();
+
+        // Launch background task to load conversations
+        let dir_for_task = current_dir.clone();
+        std::thread::spawn(move || {
+            match Conversation::list_all(&dir_for_task) {
+                Ok(convs) => {
+                    if let Ok(mut conversations) = conversations_clone.lock() {
+                        *conversations = convs;
+                    }
+                }
+                Err(_) => {
+                    // Failed to load, mark as done anyway
+                }
+            }
+            // Mark as done
+            if let Ok(mut loading) = is_loading_clone.lock() {
+                *loading = false;
+            }
+        });
+
+        let result = self.run_selector(conversations_shared, is_loading_shared)?;
 
         // Clear screen before exiting
         stdout().execute(terminal::Clear(ClearType::All))?;
@@ -85,7 +116,11 @@ impl ConversationMenu {
         Ok(result)
     }
 
-    fn run_selector(&mut self) -> Result<MenuResult> {
+    fn run_selector(
+        &mut self,
+        conversations_shared: Arc<Mutex<Vec<ConversationSummary>>>,
+        is_loading_shared: Arc<Mutex<bool>>,
+    ) -> Result<MenuResult> {
         let visible_rows = 10;  // Visible conversation items
         let mut needs_clear = false;
 
@@ -98,15 +133,50 @@ impl ConversationMenu {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        // Track state to avoid unnecessary renders
+        let mut last_loading_state = self.is_loading;
+        let mut last_conversation_count = 0;
+
         loop {
-            // Clear screen once if needed (after navigation)
-            if needs_clear {
+            let mut state_changed = false;
+
+            // Update loading state and conversations from background task
+            if let Ok(loading) = is_loading_shared.lock() {
+                if self.is_loading && !*loading {
+                    // Just finished loading - major state change
+                    self.is_loading = false;
+                    state_changed = true;
+                }
+                self.is_loading = *loading;
+            }
+
+            // Update conversations list from shared state
+            if let Ok(conversations) = conversations_shared.lock() {
+                if self.conversations.len() != conversations.len() {
+                    self.conversations = conversations.clone();
+                    state_changed = true;
+                }
+            }
+
+            // Update spinner animation (doesn't require clear)
+            if self.is_loading {
+                self.spinner_counter += 1;
+            }
+
+            // Only clear screen for major state changes (not for spinner animation)
+            let should_clear = needs_clear || state_changed ||
+                              (self.is_loading != last_loading_state) ||
+                              (self.conversations.len() != last_conversation_count);
+
+            if should_clear {
                 stdout().execute(terminal::Clear(ClearType::All))?;
                 stdout().flush()?;
                 needs_clear = false;
+                last_loading_state = self.is_loading;
+                last_conversation_count = self.conversations.len();
             }
 
-            self.render(visible_rows)?;
+            self.render(visible_rows, !should_clear)?;
 
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
@@ -211,12 +281,12 @@ impl ConversationMenu {
         }
     }
 
-    fn render(&self, visible_rows: usize) -> Result<()> {
+    fn render(&self, visible_rows: usize, partial_update: bool) -> Result<()> {
         let (cols, rows) = terminal::size()?;
 
         let menu_width = 80.min(cols.saturating_sub(4));
-        let menu_height = if self.conversations.is_empty() {
-            8  // Smaller for empty state
+        let menu_height = if self.conversations.is_empty() || self.is_loading {
+            8  // Smaller for empty/loading state
         } else {
             visible_rows + 8  // Header + items + footer
         };
@@ -226,24 +296,51 @@ impl ConversationMenu {
         let start_x = if cols > menu_width { (cols - menu_width) / 2 } else { 0 };
         let start_y = if rows > menu_height_u16 { (rows - menu_height_u16) / 2 } else { 0 };
 
-        // Draw box
-        self.draw_box(start_x, start_y, menu_width, menu_height_u16)?;
+        // Only draw box and title on full render
+        if !partial_update {
+            // Draw box
+            self.draw_box(start_x, start_y, menu_width, menu_height_u16)?;
 
-        // Draw title
-        let title_y = start_y + 1;
-        let title = "📚 Conversation History";
-        let title_x = if menu_width > title.len() as u16 {
-            start_x + (menu_width - title.len() as u16) / 2
-        } else {
-            start_x + 1
-        };
-        stdout()
-            .queue(MoveTo(title_x, title_y))?
-            .queue(SetForegroundColor(Color::AnsiValue(crate::utils::colors::MISC_ANSI)))?
-            .queue(Print(style(title).bold()))?
-            .queue(ResetColor)?;
+            // Draw title
+            let title_y = start_y + 1;
+            let title = "📚 Conversation History";
+            let title_x = if menu_width > title.len() as u16 {
+                start_x + (menu_width - title.len() as u16) / 2
+            } else {
+                start_x + 1
+            };
+            stdout()
+                .queue(MoveTo(title_x, title_y))?
+                .queue(SetForegroundColor(Color::AnsiValue(crate::utils::colors::MISC_ANSI)))?
+                .queue(Print(style(title).bold()))?
+                .queue(ResetColor)?;
+        }
 
-        if self.conversations.is_empty() {
+        if self.is_loading {
+            // Show loading indicator with spinner - only update the spinner line
+            let spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let spinner = spinner_chars[(self.spinner_counter / 2) % spinner_chars.len()];
+
+            let loading_y = start_y + 3;
+            let loading_msg = format!("{} Loading conversations...", spinner);
+            let loading_x = if menu_width > loading_msg.len() as u16 {
+                start_x + (menu_width - loading_msg.len() as u16) / 2
+            } else {
+                start_x + 2
+            };
+
+            // Clear the line first with spaces to prevent artifacts
+            let clear_line = " ".repeat(menu_width as usize - 4);
+            stdout()
+                .queue(MoveTo(start_x + 2, loading_y))?
+                .queue(Print(&clear_line))?;
+
+            stdout()
+                .queue(MoveTo(loading_x, loading_y))?
+                .queue(SetForegroundColor(Color::AnsiValue(crate::utils::colors::AI_HIGHLIGHT_ANSI)))?
+                .queue(Print(&loading_msg))?
+                .queue(ResetColor)?;
+        } else if self.conversations.is_empty() {
             // Empty state
             let empty_y = start_y + 3;
             let empty_msg = "No saved conversations found.";
@@ -340,7 +437,9 @@ impl ConversationMenu {
 
         // Draw help text
         let help_y = start_y + menu_height_u16 - 1;
-        let help_text = if self.conversations.is_empty() {
+        let help_text = if self.is_loading {
+            "Loading... • ESC Back"
+        } else if self.conversations.is_empty() {
             "ESC/Enter Back"
         } else {
             "↑↓ Navigate • Enter Load • Ctrl+D Delete • Ctrl+N New • ESC Back"

@@ -1,8 +1,9 @@
 //! Performance benchmarks for configuration module operations
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use arula_cli::config::{Config, AiConfig};
 use std::fs;
+use std::hint::black_box;
 use tempfile::TempDir;
 
 // Helper function to create test config for benchmarks

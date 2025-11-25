@@ -1,9 +1,10 @@
 //! Performance benchmarks for chat module operations
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use arula_cli::chat::{ChatMessage, MessageType, EnhancedChatMessage, ChatRole};
-use arula_cli::test_utils::ChatFactory;
+// use arula_cli::test_utils::ChatFactory;  // Temporarily disabled - test_utils module doesn't exist
 use chrono::{Local, Utc};
+use std::hint::black_box;
 
 fn bench_message_creation(c: &mut Criterion) {
     c.bench_function("message_create_user", |b| {

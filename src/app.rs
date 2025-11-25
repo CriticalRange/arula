@@ -1772,6 +1772,7 @@ mod tests {
     use serde_json::json;
 
     fn create_test_app() -> App {
+        let (_tracking_tx, tracking_rx) = std::sync::mpsc::channel();
         App {
             config: Config::default(),
             agent_client: None,
@@ -1785,10 +1786,16 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
             openrouter_models: Arc::new(Mutex::new(None)),
+            external_printer: None,
             openai_models: Arc::new(Mutex::new(None)),
             anthropic_models: Arc::new(Mutex::new(None)),
             ollama_models: Arc::new(Mutex::new(None)),
             zai_models: Arc::new(Mutex::new(None)),
+            current_conversation: None,
+            auto_save_conversations: false,
+            tracking_rx: Some(tracking_rx),
+            tracking_tx: None,
+            shared_conversation: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1846,6 +1853,7 @@ mod tests {
         let mut config = Config::default();
         config.set_model("test-model");
 
+        let (_tracking_tx, tracking_rx) = std::sync::mpsc::channel();
         let app = App {
             config,
             agent_client: None,
@@ -1859,10 +1867,16 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
             openrouter_models: Arc::new(Mutex::new(None)),
+            external_printer: None,
             openai_models: Arc::new(Mutex::new(None)),
             anthropic_models: Arc::new(Mutex::new(None)),
             ollama_models: Arc::new(Mutex::new(None)),
             zai_models: Arc::new(Mutex::new(None)),
+            current_conversation: None,
+            auto_save_conversations: false,
+            tracking_rx: Some(tracking_rx),
+            tracking_tx: None,
+            shared_conversation: Arc::new(Mutex::new(None)),
         };
 
         assert_eq!(app.config.get_model(), "test-model");
