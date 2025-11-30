@@ -6,14 +6,12 @@ use arula_cli::tools::mcp_dynamic;
 
 #[tokio::main]
 async fn main() {
-    println!("🔧 Debug: Checking what tools are actually registered...");
 
     let config = Config::default();
 
     // Create basic tool registry
     let mut registry = create_default_tool_registry(&config);
 
-    println!("📋 Basic tools:");
     for tool_name in registry.get_tools() {
         println!("  - {}", tool_name);
     }
@@ -22,12 +20,10 @@ async fn main() {
     println!("\n🔧 Initializing MCP tools...");
     match mcp_dynamic::initialize_dynamic_mcp_tools(&config).await {
         Ok(count) => {
-            println!("✅ Discovered {} MCP servers", count);
 
             if let Err(e) = mcp_dynamic::register_dynamic_mcp_tools(&mut registry).await {
                 println!("❌ Failed to register MCP tools: {}", e);
             } else {
-                println!("✅ Registered MCP tools");
             }
         }
         Err(e) => {

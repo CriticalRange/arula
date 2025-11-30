@@ -43,28 +43,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Test tool registry integration
-    println!("📋 Testing tool registry integration...");
     let tool_registry = create_default_tool_registry(&config);
     let available_tools = tool_registry.get_tools();
 
-    println!("✅ Available tools: {}", available_tools.len());
     for tool in available_tools {
         println!("  - {}", tool);
     }
 
     // Get discovered servers
-    println!("🔍 Getting discovered MCP servers...");
     let discovered = get_discovered_mcp_servers().await;
-    println!("✅ Discovered {} MCP servers", discovered.len());
 
     for server in discovered {
-        println!("  📦 Server: {} ({})", server.server_id, server.name);
+        println!("   Server: {} ({})", server.server_id, server.name);
         println!("    Tools: {}", server.tools.len());
         for tool in server.tools {
             println!("      - {}", tool.name);
         }
     }
-
-    println!("🎉 MCP integration test completed!");
     Ok(())
 }

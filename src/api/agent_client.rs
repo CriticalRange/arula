@@ -5,7 +5,7 @@
 
 use crate::api::agent::{AgentOptions, ContentBlock, ToolRegistry, ToolResult};
 use crate::api::api::{ApiClient, ChatMessage, StreamingResponse};
-use crate::tools::tools::create_basic_tool_registry;
+use crate::tools::tools::{create_basic_tool_registry, initialize_mcp_tools};
 use crate::utils::config::Config;
 use anyhow::Result;
 use futures::Stream;
@@ -18,6 +18,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").unwrap_or_default() == "1" {
         println!("🔧 DEBUG: {}", msg);
+        // Also log to file
+        crate::utils::logger::debug(msg);
     }
 }
 
@@ -109,47 +111,36 @@ impl AgentClient {
         message: &str,
         conversation_history: Option<Vec<ChatMessage>>,
     ) -> Result<Pin<Box<dyn Stream<Item = ContentBlock> + Send>>> {
-        // Convert conversation history to the format expected by our existing API
-        let api_messages = self.build_api_messages(message, conversation_history)?;
-
-        // Start streaming request with tools
         let (tx, rx) = mpsc::unbounded_channel();
         let api_client = self.api_client.clone();
-        // Filter tools to only include working MCP servers
-        let all_tools = self.tool_registry.get_openai_tools();
-        let tools: Vec<Value> = all_tools.into_iter().filter(|tool| {
-            if let Some(function) = tool.get("function") {
-                if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
-                    // Filter out legacy MCP tools
-                    if matches!(name, "mcp_call" | "mcp_list_tools") {
-                        return false;
-                    }
-
-                    // For now, filter out dynamic MCP tools to prevent broken tools from reaching AI
-                    // TODO: Implement proper validation in a future update
-                    if name.starts_with("mcp_") {
-                        eprintln!("⚠️ MCP Filtering: Excluding MCP tool '{}' to prevent broken tool calls", name);
-                        return false;
-                    }
-                }
-            }
-            true
-        }).collect();
         let auto_execute_tools = self.options.auto_execute_tools;
         let max_tool_iterations = self.options.max_tool_iterations;
-
         let debug = self.options.debug;
+        let config_clone = self.config.clone();
         let tx_clone = tx.clone();
+
+        // Get the available tools with proper schemas from the registry
+        let tools = self.tool_registry.get_openai_tools();
+
+        // Build the messages with the system prompt
+        let messages = self.build_api_messages(message, conversation_history)?;
+
         tokio::spawn(async move {
+            // Create a new tool registry for execution in the async task
+            let mut execution_registry = create_basic_tool_registry();
+            if let Err(e) = initialize_mcp_tools(&mut execution_registry, &config_clone).await {
+                eprintln!("⚠️ Failed to initialize MCP tools in async task: {}", e);
+            }
+
             if let Err(e) = Self::handle_streaming_response(
                 api_client,
-                api_messages,
+                messages,
                 tools,
                 tx,
                 auto_execute_tools,
                 max_tool_iterations,
                 debug,
-                &ToolRegistry::new(), // Use a new empty registry for streaming
+                &execution_registry,
             )
             .await
             {
@@ -208,20 +199,35 @@ impl AgentClient {
 
         // Add conversation history if provided
         if let Some(history) = conversation_history {
+            // Check if the last message in history is already the current user message
+            let history_has_current_message = history.last().map_or(false, |last| {
+                last.role == "user" && last.content.as_deref() == Some(message)
+            });
+
             for msg in history {
                 if msg.role != "system" {
                     messages.push(msg);
                 }
             }
-        }
 
-        // Add current user message
-        messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: Some(message.to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+            // Only add current user message if it's not already in history
+            if !history_has_current_message {
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(message.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        } else {
+            // No history provided, add the user message
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: Some(message.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
 
         Ok(messages)
     }
@@ -238,27 +244,8 @@ impl AgentClient {
         tool_registry: &crate::api::agent::ToolRegistry,
     ) -> Result<()> {
 
-        // Filter tools to only include functional MCP servers
-        let all_tools = tool_registry.get_openai_tools();
-        let tools: Vec<Value> = all_tools.into_iter().filter(|tool| {
-            if let Some(function) = tool.get("function") {
-                if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
-                    // Filter out legacy MCP tools
-                    if matches!(name, "mcp_call" | "mcp_list_tools") {
-                        return false;
-                    }
-
-                    // For dynamic MCP tools (mcp_server_name), verify they're actually functional
-                    if name.starts_with("mcp_") {
-                        // For now, skip MCP tools in streaming response to avoid complex validation
-                        // TODO: Implement async validation for streaming context
-                        eprintln!("⚠️ MCP Streaming: Skipping MCP tool '{}' in streaming context", name);
-                        return false;
-                    }
-                }
-            }
-            true
-        }).collect();
+        // Use the tools passed in (already filtered in query method)
+        let tools = _tools;
 
         let mut current_messages = messages;
 
@@ -308,9 +295,16 @@ impl AgentClient {
             }
 
             // Add assistant message with tool calls
+            // Use None for content if it's empty or just whitespace (OpenAI spec: content can be null when tool_calls present)
+            let trimmed_text = accumulated_text.trim();
+            let assistant_content = if trimmed_text.is_empty() {
+                None
+            } else {
+                Some(accumulated_text)
+            };
             current_messages.push(ChatMessage {
                 role: "assistant".to_string(),
-                content: Some(accumulated_text),
+                content: assistant_content,
                 tool_calls: Some(response_tools.clone()),
                 tool_call_id: None,
             });

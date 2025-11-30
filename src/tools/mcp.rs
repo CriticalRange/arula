@@ -80,8 +80,25 @@ impl McpClient {
             request = request.header(key, value);
         }
 
+        // Log the outgoing request
+        let body_str = serde_json::to_string_pretty(&request_body).unwrap_or_default();
+        crate::utils::logger::info(&format!("=== HTTP REQUEST ===\nPOST {}\nHEADERS:\n", &self.config.url));
+        crate::utils::logger::info("  Content-Type: application/json\n");
+        crate::utils::logger::info("  Accept: application/json, text/event-stream\n");
+        for (key, value) in &self.config.headers {
+            crate::utils::logger::info(&format!("  {}: {}\n", key, value));
+        }
+        crate::utils::logger::info(&format!("BODY ({} bytes):\n{}\n===================\n", body_str.len(), body_str));
+
         let response = request.send().await
             .map_err(|e| anyhow::anyhow!("Failed to send MCP request: {}", e))?;
+
+        // Log the incoming response
+        crate::utils::logger::info(&format!("=== HTTP RESPONSE ===\n{} {}\nHEADERS:\n", response.status(), response.url()));
+        for (name, value) in response.headers() {
+            crate::utils::logger::info(&format!("  {}: {}\n", name, value.to_str().unwrap_or("<binary>")));
+        }
+        crate::utils::logger::info("BODY: <not logged to avoid consumption>\n===================\n");
 
         if !response.status().is_success() {
             let status = response.status();

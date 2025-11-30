@@ -136,6 +136,8 @@ mod animations {
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").unwrap_or_default() == "1" {
         println!("🔧 DEBUG: {}", msg);
+        // Also log to file
+        crate::utils::logger::debug(msg);
     }
 }
 
@@ -269,6 +271,40 @@ impl OutputHandler {
 
     pub fn print_ai_message(&mut self, content: &str) -> io::Result<()> {
         println!("{} {}", helpers::ai_response().apply_to("▶ ARULA:"), content);
+        Ok(())
+    }
+
+    /// Print AI response with full markdown rendering using termimad
+    pub fn print_ai_response_markdown(&mut self, content: &str) -> io::Result<()> {
+        io::stdout().flush()?;
+        
+        // Render the content with termimad markdown
+        println!("{}", self.mad_skin.term_text(content));
+        Ok(())
+    }
+
+    /// Stream AI response text with markdown rendering (for real-time display)
+    pub fn stream_ai_response(&mut self, text: &str) -> io::Result<()> {
+        self.stream_markdown(text)
+    }
+
+    /// Finalize streaming response (flush any remaining buffered content)
+    pub fn finalize_stream(&mut self) -> io::Result<()> {
+        // Handle any remaining content in the line buffer
+        if !self.line_buffer.is_empty() {
+            if self.in_code_block {
+                // Close any unclosed code block
+                self.render_code_block()?;
+                self.in_code_block = false;
+                self.code_block_content.clear();
+                self.code_block_lang.clear();
+            }
+            // Note: Don't re-print the line buffer content here - it was already
+            // printed via print_inline during streaming. Just clear the state.
+            self.line_buffer.clear();
+            self.last_printed_len = 0;
+        }
+        println!(); // Add newline at end of response
         Ok(())
     }
 

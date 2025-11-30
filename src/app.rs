@@ -196,70 +196,41 @@ fn summarize_tool_result(result_value: &Value) -> String {
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").unwrap_or_default() == "1" {
         println!("🔧 DEBUG: {}", msg);
+        // Also log to file
+        crate::utils::logger::debug(msg);
     }
 }
 
 /// Log AI request/response to .arula/debug.log for debugging
 fn log_ai_interaction(request: &str, context: &[crate::api::api::ChatMessage], response_start: Option<&str>) {
-    let log_dir = Path::new(".arula");
-    if !log_dir.exists() {
-        let _ = std::fs::create_dir_all(log_dir);
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let mut log_msg = format!("\n=== AI Interaction at {} ===\n", timestamp);
+    log_msg.push_str(&format!("USER REQUEST: {}\n", request));
+    log_msg.push_str(&format!("CONTEXT MESSAGES ({} total):\n", context.len()));
+
+    for (i, msg) in context.iter().enumerate() {
+        log_msg.push_str(&format!("  [{}]: {} -> {}\n",
+            i, msg.role,
+            msg.content.as_ref().unwrap_or(&"(no content)".to_string())
+        ));
     }
 
-    let log_path = log_dir.join("ai_debug.log");
-
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        use std::io::Write;
-        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        let _ = writeln!(file, "\n=== AI Interaction at {} ===", timestamp);
-        let _ = writeln!(file, "USER REQUEST: {}", request);
-        let _ = writeln!(file, "CONTEXT MESSAGES ({} total):", context.len());
-
-        for (i, msg) in context.iter().enumerate() {
-            let _ = writeln!(file, "  [{}]: {} -> {}",
-                i, msg.role,
-                msg.content.as_ref().unwrap_or(&"(no content)".to_string())
-            );
-        }
-
-        if let Some(start) = response_start {
-            let _ = writeln!(file, "AI RESPONSE START: {}", start);
-        }
-        let _ = writeln!(file, "=====================================");
+    if let Some(start) = response_start {
+        log_msg.push_str(&format!("AI RESPONSE START: {}\n", start));
     }
+    log_msg.push_str("=====================================\n");
+
+    crate::utils::logger::info(&log_msg);
 }
 
 /// Log AI response chunks to .arula/debug.log
 fn log_ai_response_chunk(chunk: &str) {
-    let log_path = Path::new(".arula").join("ai_debug.log");
-
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "CHUNK: {}", chunk);
-    }
+    crate::utils::logger::debug(&format!("AI CHUNK: {}", chunk));
 }
 
 /// Log AI response completion to .arula/debug.log
 fn log_ai_response_complete(final_response: &str) {
-    let log_path = Path::new(".arula").join("ai_debug.log");
-
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "COMPLETE RESPONSE: {}", final_response);
-        let _ = writeln!(file, "=== END AI Interaction ===\n");
-    }
+    crate::utils::logger::info(&format!("AI COMPLETE RESPONSE: {}\n=== END AI Interaction ===\n", final_response));
 }
 
 #[derive(Debug, Clone)]
@@ -425,7 +396,6 @@ impl App {
         self.cached_tool_registry.as_ref().unwrap()
     }
 
-    
     /// Build comprehensive system prompt from ARULA.md files
     fn build_system_prompt(&self) -> String {
         let mut prompt_parts = Vec::new();
@@ -453,6 +423,30 @@ The user will manually rebuild after exiting the application.
 "#.to_string());
         }
 
+        // Add tool calling instructions
+        prompt_parts.push(r#"
+## Tool Calling Instructions
+
+**CRITICAL: You must use JSON function call syntax to execute tools!**
+
+When you need to use tools, you should output a JSON function call in this exact format:
+
+```json
+{"name": "function_name", "parameters": {"param1": "value1", "param2": "value2"}}
+```
+
+For example:
+- To run a command: `{"name": "execute_bash", "parameters": {"command": "echo hello"}}`
+- To list files: `{"name": "list_directory", "parameters": {"path": "."}}`
+- To read a file: `{"name": "read_file", "parameters": {"path": "README.md"}}`
+
+**NEVER show tool calls in markdown code blocks!** Always use the JSON function call format above.
+**DO NOT call functions directly like `execute_bash(command="echo hello")` - use JSON syntax instead.**
+"#.to_string());
+
+        // Add built-in tools information
+        prompt_parts.push(self.build_builtin_tools_info());
+
         // Read global ARULA.md from ~/.arula/
         if let Some(global_arula) = Self::read_global_arula_md() {
             prompt_parts.push(format!(
@@ -478,17 +472,17 @@ The user will manually rebuild after exiting the application.
 
         // MCP Tools section
         info.push_str("\n## MCP (Model Context Protocol) Tools\n");
-        info.push_str("You have access to MCP servers for extended capabilities. Here are the available MCP tools:\n\n");
+        info.push_str("You have access to MCP servers for extended capabilities. You can call these tools directly using function calls:\n\n");
 
         info.push_str("### 1. mcp_call - Call a tool from a configured MCP server\n");
-        info.push_str("**Usage:** `mcp_call(server=\"server_id\", action=\"tool_name\", parameters={...})`\n");
+        info.push_str("**Usage:** Use JSON function call syntax to execute MCP tools\n");
         info.push_str("**Parameters:**\n");
         info.push_str("- `server` (string, required): The MCP server ID (e.g., \"context7\")\n");
         info.push_str("- `action` (string, required): The tool name to call on the MCP server\n");
         info.push_str("- `parameters` (object, optional): Parameters for the tool call\n\n");
 
         info.push_str("### 2. mcp_list_tools - List all available MCP tools\n");
-        info.push_str("**Usage:** `mcp_list_tools()`\n");
+        info.push_str("**Usage:** Use JSON function call syntax to discover available tools\n");
         info.push_str("**Returns:** List of all available tools from configured MCP servers\n\n");
 
         // Add information about configured servers
@@ -503,21 +497,19 @@ The user will manually rebuild after exiting the application.
                         info.push_str("  - Available tools:\n");
                         info.push_str("    * resolve-library-id: Resolves a library name to Context7-compatible library ID\n");
                         info.push_str("      - Parameters: {\"libraryName\": \"<library_name>\" (string, required)}\n");
-                        info.push_str("      - Example: mcp_call(server=\"context7\", action=\"resolve-library-id\", parameters={\"libraryName\": \"tokio\"})\n");
+                        info.push_str("      - Example: `{\"name\": \"mcp_call\", \"parameters\": {\"server\": \"context7\", \"action\": \"resolve-library-id\", \"parameters\": {\"libraryName\": \"tokio\"}}}`\n");
                         info.push_str("    * get-library-docs: Fetches documentation for a specific library\n");
                         info.push_str("      - Parameters: {\"context7CompatibleLibraryID\": \"<library_id>\" (string, required)}\n");
-                        info.push_str("      - Example: mcp_call(server=\"context7\", action=\"get-library-docs\", parameters={\"context7CompatibleLibraryID\": \"/tokio/tokio\"})\n");
+                        info.push_str("      - Example: `{\"name\": \"mcp_call\", \"parameters\": {\"server\": \"context7\", \"action\": \"get-library-docs\", \"parameters\": {\"context7CompatibleLibraryID\": \"/tokio/tokio\"}}}`\n");
                         info.push_str("  - Recommended workflow: First call resolve-library-id, then use the returned ID with get-library-docs\n\n");
                     }
                     _ => {
                         info.push_str(&format!("- **{}**: Custom MCP server\n", server_id));
-                        info.push_str("  - Use `mcp_list_tools()` to discover available tools\n\n");
+                        info.push_str("  - Call mcp_list_tools() to discover available tools\n\n");
                     }
                 }
             }
         }
-
-        info.push_str("**Important:** Always check what tools are available on each server before calling them. Use `mcp_list_tools()` first to discover capabilities.");
 
         info
     }
@@ -1933,6 +1925,49 @@ The user will manually rebuild after exiting the application.
         let endpoint = provider_config.api_url.clone().unwrap_or_default();
 
         self.current_conversation = Some(Conversation::new(model, provider, endpoint));
+    }
+
+    /// Build built-in tools information for the AI
+    fn build_builtin_tools_info(&self) -> String {
+        let mut info = String::new();
+
+        info.push_str("\n## Built-in Tools\n");
+        info.push_str("You have access to the following built-in tools that you can call directly:\n\n");
+
+        info.push_str("### 1. execute_bash - Execute shell commands\n");
+        info.push_str("**Usage:** Call this function directly to run shell commands\n");
+        info.push_str("**Parameters:**\n");
+        info.push_str("- `command` (string, required): The shell command to execute\n");
+        info.push_str("**Example:** Call `execute_bash(command=\"echo hello world\")`\n\n");
+
+        info.push_str("### 2. list_directory - List files and directories\n");
+        info.push_str("**Usage:** Call this function directly to list directory contents\n");
+        info.push_str("**Parameters:**\n");
+        info.push_str("- `path` (string, required): The directory path to list\n");
+        info.push_str("**Example:** Call `list_directory(path=\".\")`\n\n");
+
+        info.push_str("### 3. read_file - Read file contents\n");
+        info.push_str("**Usage:** Call this function directly to read a file\n");
+        info.push_str("**Parameters:**\n");
+        info.push_str("- `path` (string, required): The file path to read\n");
+        info.push_str("**Example:** Call `read_file(path=\"README.md\")`\n\n");
+
+        info.push_str("### 4. write_file - Write or create files\n");
+        info.push_str("**Usage:** Call this function directly to write file contents\n");
+        info.push_str("**Parameters:**\n");
+        info.push_str("- `path` (string, required): The file path to write to\n");
+        info.push_str("- `content` (string, required): The content to write\n");
+        info.push_str("**Example:** Call `write_file(path=\"hello.txt\", content=\"Hello World!\")`\n\n");
+
+        info.push_str("### 5. edit_file - Edit existing files\n");
+        info.push_str("**Usage:** Call this function directly to edit files with find/replace\n");
+        info.push_str("**Parameters:**\n");
+        info.push_str("- `path` (string, required): The file path to edit\n");
+        info.push_str("- `old_string` (string, required): The text to replace\n");
+        info.push_str("- `new_string` (string, required): The replacement text\n");
+        info.push_str("**Example:** Call `edit_file(path=\"file.txt\", old_string=\"old\", new_string=\"new\")`\n\n");
+
+        info
     }
 }
 

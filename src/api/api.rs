@@ -48,12 +48,56 @@ impl ZAIApiError {
 fn debug_print(msg: &str) {
     if std::env::var("ARULA_DEBUG").unwrap_or_default() == "1" {
         println!("🔧 DEBUG: {}", msg);
+        // Also log to file
+        crate::utils::logger::debug(msg);
     }
+}
+
+/// Log raw HTTP request details
+fn log_http_request(method: &str, url: &str, headers: &reqwest::header::HeaderMap, body: Option<&str>) {
+    let mut log_msg = format!("=== HTTP REQUEST ===\n{} {}\n", method, url);
+
+    // Log headers
+    log_msg.push_str("HEADERS:\n");
+    for (name, value) in headers {
+        log_msg.push_str(&format!("  {}: {}\n", name, value.to_str().unwrap_or("<binary>")));
+    }
+
+    // Log body if present
+    if let Some(body_content) = body {
+        log_msg.push_str(&format!("BODY ({} bytes):\n{}\n", body_content.len(), body_content));
+    } else {
+        log_msg.push_str("BODY: <empty>\n");
+    }
+
+    log_msg.push_str("===================\n");
+
+    crate::utils::logger::info(&log_msg);
+}
+
+/// Log raw HTTP response details (without consuming the body)
+fn log_http_response(response: &reqwest::Response) {
+    let status = response.status();
+    let url = response.url();
+    let mut log_msg = format!("=== HTTP RESPONSE ===\n{} {}\n", status, url);
+
+    // Log response headers
+    log_msg.push_str("HEADERS:\n");
+    for (name, value) in response.headers() {
+        log_msg.push_str(&format!("  {}: {}\n", name, value.to_str().unwrap_or("<binary>")));
+    }
+
+    // Note: Response body not logged here to avoid consuming it
+    log_msg.push_str("BODY: <not logged to avoid consumption>\n");
+    log_msg.push_str("===================\n");
+
+    crate::utils::logger::info(&log_msg);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -453,9 +497,10 @@ impl ApiClient {
             "max_tokens": 2048
         });
 
+        let request_url = format!("{}/chat/completions", self.endpoint);
         let mut request_builder = self
             .client
-            .post(format!("{}/chat/completions", self.endpoint))
+            .post(&request_url)
             .json(&request_body);
 
         // Add authorization header if API key is provided
@@ -464,7 +509,19 @@ impl ApiClient {
                 request_builder.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
+        // Log the outgoing request
+        let mut request_headers = reqwest::header::HeaderMap::new();
+        if !self.api_key.is_empty() {
+            request_headers.insert("Authorization", format!("Bearer {}", self.api_key).parse().unwrap());
+        }
+        request_headers.insert("Content-Type", "application/json".parse().unwrap());
+        let body_str = serde_json::to_string_pretty(&request_body).unwrap_or_default();
+        log_http_request("POST", &request_url, &request_headers, Some(&body_str));
+
         let response = request_builder.send().await?;
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if response.status().is_success() {
             let response_json: serde_json::Value = response.json().await?;
@@ -563,9 +620,10 @@ impl ApiClient {
             "temperature": 0.7
         });
 
+        let request_url = format!("{}/v1/messages", self.endpoint);
         let mut request_builder = self
             .client
-            .post(format!("{}/v1/messages", self.endpoint))
+            .post(&request_url)
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01")
             .json(&request);
@@ -575,7 +633,20 @@ impl ApiClient {
             request_builder = request_builder.header("x-api-key", &self.api_key);
         }
 
+        // Log the outgoing request
+        let mut request_headers = reqwest::header::HeaderMap::new();
+        request_headers.insert("content-type", "application/json".parse().unwrap());
+        request_headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+        if !self.api_key.is_empty() {
+            request_headers.insert("x-api-key", self.api_key.parse().unwrap());
+        }
+        let body_str = serde_json::to_string_pretty(&request).unwrap_or_default();
+        log_http_request("POST", &request_url, &request_headers, Some(&body_str));
+
         let response = request_builder.send().await?;
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if response.status().is_success() {
             let claude_response: Value = response.json().await?;
@@ -640,12 +711,21 @@ impl ApiClient {
             }
         });
 
-        let response = self
+        let request_url = format!("{}/api/generate", self.endpoint);
+        let request_builder = self
             .client
-            .post(format!("{}/api/generate", self.endpoint))
-            .json(&request)
-            .send()
-            .await?;
+            .post(&request_url)
+            .json(&request);
+
+        // Log the outgoing request
+        let request_headers = reqwest::header::HeaderMap::new();
+        let body_str = serde_json::to_string_pretty(&request).unwrap_or_default();
+        log_http_request("POST", &request_url, &request_headers, Some(&body_str));
+
+        let response = request_builder.send().await?;
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if response.status().is_success() {
             let ollama_response: Value = response.json().await?;
@@ -698,8 +778,20 @@ impl ApiClient {
                     "role": msg.role,
                 });
 
-                if let Some(content) = msg.content {
-                    msg_obj["content"] = json!(content);
+                // Handle content field based on role and presence of tool_calls
+                match (msg.content, &msg.tool_calls, msg.role.as_str()) {
+                    (Some(content), _, _) => {
+                        msg_obj["content"] = json!(content);
+                    }
+                    (None, Some(_), "assistant") => {
+                        msg_obj["content"] = json!(null);
+                    }
+                    (None, _, "tool") => {
+                        msg_obj["content"] = json!("");
+                    }
+                    _ => {
+                        msg_obj["content"] = json!("");
+                    }
                 }
 
                 if let Some(tool_calls) = msg.tool_calls {
@@ -744,10 +836,21 @@ impl ApiClient {
                 .header("Accept-Language", "en-US,en")
                 .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli");
 
+            // Log the outgoing request for this attempt
+            let mut request_headers = reqwest::header::HeaderMap::new();
+            request_headers.insert("Authorization", format!("Bearer {}", self.api_key).parse().unwrap());
+            request_headers.insert("Accept-Language", "en-US,en".parse().unwrap());
+            request_headers.insert("HTTP-Referer", "https://github.com/arula-cli/arula-cli".parse().unwrap());
+            let body_str = serde_json::to_string_pretty(&request).unwrap_or_default();
+            log_http_request("POST", &format!("{}/chat/completions", self.endpoint), &request_headers, Some(&body_str));
+
             let response = request_builder.send().await;
             match response {
                 Ok(resp) => {
                     let status = resp.status();
+
+                    // Log the incoming response
+                    log_http_response(&resp);
 
                     if status.is_success() {
                         let response_json: serde_json::Value = resp.json().await?;
@@ -897,9 +1000,10 @@ impl ApiClient {
             "max_tokens": 2048
         });
 
+        let request_url = format!("{}/chat/completions", self.endpoint);
         let mut request_builder = self
             .client
-            .post(format!("{}/chat/completions", self.endpoint))
+            .post(&request_url)
             .json(&request_body);
 
         // Add authorization header if API key is provided
@@ -913,7 +1017,20 @@ impl ApiClient {
             .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli")
             .header("X-Title", "ARULA CLI");
 
+        // Log the outgoing request
+        let mut request_headers = reqwest::header::HeaderMap::new();
+        if !self.api_key.is_empty() {
+            request_headers.insert("Authorization", format!("Bearer {}", self.api_key).parse().unwrap());
+        }
+        request_headers.insert("HTTP-Referer", "https://github.com/arula-cli/arula-cli".parse().unwrap());
+        request_headers.insert("X-Title", "ARULA CLI".parse().unwrap());
+        let body_str = serde_json::to_string_pretty(&request_body).unwrap_or_default();
+        log_http_request("POST", &request_url, &request_headers, Some(&body_str));
+
         let response = request_builder.send().await?;
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if response.status().is_success() {
             let response_json: serde_json::Value = response.json().await?;
@@ -1050,8 +1167,20 @@ impl ApiClient {
                     "role": msg.role,
                 });
 
-                if let Some(content) = msg.content {
-                    msg_obj["content"] = json!(content);
+                // Handle content field based on role and presence of tool_calls
+                match (msg.content, &msg.tool_calls, msg.role.as_str()) {
+                    (Some(content), _, _) => {
+                        msg_obj["content"] = json!(content);
+                    }
+                    (None, Some(_), "assistant") => {
+                        msg_obj["content"] = json!(null);
+                    }
+                    (None, _, "tool") => {
+                        msg_obj["content"] = json!("");
+                    }
+                    _ => {
+                        msg_obj["content"] = json!("");
+                    }
                 }
 
                 if let Some(tool_calls) = msg.tool_calls {
@@ -1310,9 +1439,10 @@ impl ApiClient {
             "tool_choice": "auto"
         });
 
+        let request_url = format!("{}/chat/completions", self.endpoint);
         let mut request_builder = self
             .client
-            .post(format!("{}/chat/completions", self.endpoint))
+            .post(&request_url)
             .json(&request_body);
 
         if !self.api_key.is_empty() {
@@ -1327,7 +1457,22 @@ impl ApiClient {
                 .header("X-Title", "ARULA CLI");
         }
 
+        // Log the outgoing request
+        let mut request_headers = reqwest::header::HeaderMap::new();
+        if !self.api_key.is_empty() {
+            request_headers.insert("Authorization", format!("Bearer {}", self.api_key).parse().unwrap());
+        }
+        if self.provider == AIProvider::OpenRouter {
+            request_headers.insert("HTTP-Referer", "https://github.com/arula-cli/arula-cli".parse().unwrap());
+            request_headers.insert("X-Title", "ARULA CLI".parse().unwrap());
+        }
+        let body_str = serde_json::to_string_pretty(&request_body).unwrap_or_default();
+        log_http_request("POST", &request_url, &request_headers, Some(&body_str));
+
         let response = request_builder.send().await?;
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if response.status().is_success() {
             let response_json: serde_json::Value = response.json().await?;
@@ -1467,8 +1612,25 @@ impl ApiClient {
                     "role": msg.role,
                 });
 
-                if let Some(content) = msg.content {
-                    msg_obj["content"] = serde_json::json!(content);
+                // Handle content field based on role and presence of tool_calls
+                // For assistant messages with tool_calls, content can be null
+                // For tool messages, content is required
+                match (msg.content, &msg.tool_calls, msg.role.as_str()) {
+                    (Some(content), _, _) => {
+                        msg_obj["content"] = serde_json::json!(content);
+                    }
+                    (None, Some(_), "assistant") => {
+                        // Assistant with tool_calls but no content - explicitly set null
+                        msg_obj["content"] = serde_json::json!(null);
+                    }
+                    (None, _, "tool") => {
+                        // Tool messages should always have content, but handle gracefully
+                        msg_obj["content"] = serde_json::json!("");
+                    }
+                    _ => {
+                        // For other cases (user, system), content is typically required
+                        msg_obj["content"] = serde_json::json!("");
+                    }
                 }
 
                 if let Some(tool_calls) = msg.tool_calls {
@@ -1520,6 +1682,11 @@ impl ApiClient {
             .post(format!("{}/chat/completions", self.endpoint))
             .json(&request);
 
+        // Log the outgoing request
+        let request_headers = reqwest::header::HeaderMap::new();
+        let body_str = serde_json::to_string_pretty(&request).unwrap_or_default();
+        log_http_request("POST", &format!("{}/chat/completions", self.endpoint), &request_headers, Some(&body_str));
+
         if !self.api_key.is_empty() {
             request_builder =
                 request_builder.header("Authorization", format!("Bearer {}", self.api_key));
@@ -1541,6 +1708,9 @@ impl ApiClient {
             .send()
             .await?;
         let status = response.status();
+
+        // Log the incoming response
+        log_http_response(&response);
 
         if status.is_success() {
             let response_json: serde_json::Value = response.json().await?;

@@ -547,12 +547,60 @@ pub struct FileEditResult {
     pub diff: Option<String>,
 }
 
-/// Colored diff formatter using the diff crate (git-style format)
+/// Colored diff formatter using the diff crate (git-style format with context)
 fn format_colored_diff(old_content: &str, new_content: &str) -> String {
+    const CONTEXT_LINES: usize = 3;
+    
+    // Collect all diff results with their types
+    let diff_results = diff::lines(old_content, new_content);
+    
+    if diff_results.is_empty() {
+        return String::new();
+    }
+    
+    // Find indices of changed lines
+    let mut change_indices: Vec<usize> = Vec::new();
+    for (i, result) in diff_results.iter().enumerate() {
+        match result {
+            diff::Result::Left(_) | diff::Result::Right(_) => {
+                change_indices.push(i);
+            }
+            _ => {}
+        }
+    }
+    
+    if change_indices.is_empty() {
+        return String::new();
+    }
+    
+    // Build ranges to include (change indices + context)
+    let mut include_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for &idx in &change_indices {
+        // Add context before
+        let start = idx.saturating_sub(CONTEXT_LINES);
+        // Add context after
+        let end = (idx + CONTEXT_LINES + 1).min(diff_results.len());
+        for i in start..end {
+            include_indices.insert(i);
+        }
+    }
+    
     let mut output = String::new();
-
-    for diff_result in diff::lines(old_content, new_content) {
-        match diff_result {
+    let mut last_included: Option<usize> = None;
+    
+    for i in 0..diff_results.len() {
+        if !include_indices.contains(&i) {
+            continue;
+        }
+        
+        // Add separator if there's a gap
+        if let Some(last) = last_included {
+            if i > last + 1 {
+                output.push_str(&format!("{}\n", style("...").dim()));
+            }
+        }
+        
+        match &diff_results[i] {
             diff::Result::Left(removed) => {
                 output.push_str(&format!(
                     "{}{}\n",
@@ -560,8 +608,11 @@ fn format_colored_diff(old_content: &str, new_content: &str) -> String {
                     style(removed).red()
                 ));
             }
-            diff::Result::Both(_unchanged, _) => {
-                // Skip unchanged lines - only show actual changes
+            diff::Result::Both(unchanged, _) => {
+                output.push_str(&format!(
+                    " {}\n",
+                    style(unchanged).dim()
+                ));
             }
             diff::Result::Right(added) => {
                 output.push_str(&format!(
@@ -571,6 +622,8 @@ fn format_colored_diff(old_content: &str, new_content: &str) -> String {
                 ));
             }
         }
+        
+        last_included = Some(i);
     }
 
     output
@@ -1033,6 +1086,8 @@ pub struct WriteFileResult {
     pub message: String,
     pub bytes_written: Option<usize>,
     pub lines_written: Option<usize>,
+    /// Preview of written content (first 10 lines)
+    pub content_preview: Option<String>,
 }
 
 /// Simple file writing tool that creates or overwrites files
@@ -1123,11 +1178,22 @@ impl Tool for WriteFileTool {
             )
         };
 
+        // Generate content preview (first 10 lines)
+        let content_preview = {
+            let lines: Vec<&str> = content.lines().take(10).collect();
+            if lines.is_empty() {
+                None
+            } else {
+                Some(lines.join("\n"))
+            }
+        };
+
         Ok(WriteFileResult {
             success: true,
             message,
             bytes_written: Some(bytes_written),
             lines_written: Some(lines_written),
+            content_preview,
         })
     }
 }
@@ -4587,16 +4653,12 @@ pub async fn initialize_mcp_tools(registry: &mut crate::api::agent::ToolRegistry
 
     match mcp_dynamic::initialize_dynamic_mcp_tools(config).await {
         Ok(tool_count) => {
-            eprintln!("✅ Discovered {} dynamic MCP tools", tool_count);
             if let Err(e) = mcp_dynamic::register_dynamic_mcp_tools(registry).await {
-                eprintln!("⚠️ Failed to register dynamic MCP tools: {}", e);
                 return Err(e);
             } else {
-                eprintln!("✅ Registered dynamic MCP tools successfully");
             }
         }
         Err(e) => {
-            eprintln!("⚠️ Failed to initialize dynamic MCP tools: {}", e);
             return Err(e);
         }
     }

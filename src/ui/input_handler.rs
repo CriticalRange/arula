@@ -1,6 +1,10 @@
+//! Async-first input handler with tokio integration
+//! 
+//! Provides non-blocking input handling that works seamlessly with async code.
+
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     queue,
     terminal::{self, ClearType},
@@ -9,17 +13,21 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
-/// Shared state for blocking input during AI responses
+/// Shared state for managing input during AI responses
+/// Now supports queuing messages instead of blocking
 #[derive(Clone)]
 pub struct InputBlocker {
     is_blocked: Arc<Mutex<bool>>,
+    queued_input: Arc<Mutex<Option<String>>>,
 }
 
 impl InputBlocker {
     pub fn new() -> Self {
         Self {
             is_blocked: Arc::new(Mutex::new(false)),
+            queued_input: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -37,6 +45,27 @@ impl InputBlocker {
 
     pub fn is_blocked(&self) -> bool {
         self.is_blocked.lock().map(|b| *b).unwrap_or(false)
+    }
+
+    /// Queue input to be processed after AI response completes
+    pub fn queue_input(&self, input: String) {
+        if let Ok(mut queued) = self.queued_input.lock() {
+            *queued = Some(input);
+        }
+    }
+
+    /// Take queued input (returns and clears it)
+    pub fn take_queued_input(&self) -> Option<String> {
+        if let Ok(mut queued) = self.queued_input.lock() {
+            queued.take()
+        } else {
+            None
+        }
+    }
+
+    /// Check if there's queued input
+    pub fn has_queued_input(&self) -> bool {
+        self.queued_input.lock().map(|q| q.is_some()).unwrap_or(false)
     }
 }
 
@@ -95,72 +124,137 @@ impl InputHandler {
         // Save current cursor position
         let (_, current_row) = cursor::position()?;
         self.bottom_line = current_row;
-        self.draw_input_line()?;
+        // Don't draw input line here - main.rs will print the initial prompt
         Ok(())
     }
 
-    /// Draw the input line at the bottom in full-duplex mode
+    /// Calculate how many lines the input will take
+    fn calculate_input_lines(&self, width: usize) -> usize {
+        let prompt_len = self.prompt.chars().count();
+        let buffer_len = self.buffer.chars().count();
+        let total_len = prompt_len + buffer_len;
+        
+        if total_len == 0 {
+            return 1;
+        }
+        
+        // First line has prompt, subsequent lines are full width
+        let first_line_chars = width.saturating_sub(prompt_len).min(buffer_len);
+        let remaining_chars = buffer_len.saturating_sub(first_line_chars);
+        
+        if remaining_chars == 0 {
+            1
+        } else {
+            1 + (remaining_chars + width - 1) / width
+        }
+    }
+
+    /// Draw the input area at the bottom in full-duplex mode (multi-line support)
     pub fn draw_input_line(&self) -> io::Result<()> {
         if !self.use_full_duplex {
             return Ok(());
         }
 
         let (width, height) = terminal::size()?;
-        let bottom_line = height.saturating_sub(1);
-
-        // Move to bottom line and clear it
-        queue!(
-            io::stdout(),
-            cursor::MoveTo(0, bottom_line),
-            terminal::Clear(ClearType::CurrentLine),
-        )?;
-
-        // Get terminal width for horizontal scrolling
         let width = width as usize;
         let prompt_len = self.prompt.chars().count();
-        let buffer_len = self.buffer.chars().count();
-
-        // Build display content with horizontal scrolling
-        let display_content = if prompt_len + buffer_len <= width {
-            format!("{}{}", self.prompt, self.buffer)
+        let buffer_chars: Vec<char> = self.buffer.chars().collect();
+        let buffer_len = buffer_chars.len();
+        
+        // Calculate how many lines we need
+        let num_lines = self.calculate_input_lines(width);
+        let max_lines = 5.min(height as usize / 4); // Limit to 5 lines or 1/4 of screen
+        let display_lines = num_lines.min(max_lines);
+        
+        // Calculate starting row for input area
+        let start_row = height.saturating_sub(display_lines as u16);
+        
+        // Clear the input area
+        for i in 0..display_lines {
+            queue!(
+                io::stdout(),
+                cursor::MoveTo(0, start_row + i as u16),
+                terminal::Clear(ClearType::CurrentLine),
+            )?;
+        }
+        
+        // Move to start of input area
+        queue!(io::stdout(), cursor::MoveTo(0, start_row))?;
+        
+        // Print prompt
+        queue!(io::stdout(), crossterm::style::Print(&self.prompt))?;
+        
+        // Print buffer content with wrapping
+        let mut current_col = prompt_len;
+        let mut current_row = start_row;
+        let mut char_index = 0;
+        
+        // If buffer is too long, scroll to show cursor
+        let chars_before_cursor = self.cursor_pos;
+        let max_visible_chars = display_lines * width - prompt_len;
+        
+        let scroll_offset = if buffer_len > max_visible_chars && chars_before_cursor > max_visible_chars / 2 {
+            // Scroll to keep cursor roughly in the middle
+            (chars_before_cursor - max_visible_chars / 2).min(buffer_len.saturating_sub(max_visible_chars))
         } else {
-            let available_width = width.saturating_sub(prompt_len);
-            if available_width == 0 {
-                self.prompt.clone()
-            } else if self.cursor_pos < available_width {
-                let visible_end = self.buffer.chars().take(available_width).collect::<String>();
-                format!("{}{}", self.prompt, visible_end)
-            } else {
-                let scroll_start = self.cursor_pos - available_width + 1;
-                let visible_chars: String = self.buffer.chars()
-                    .skip(scroll_start)
-                    .take(available_width)
-                    .collect();
-                format!("{}{}", self.prompt, visible_chars)
-            }
+            0
         };
-
-        // Don't show any status text when blocked - just the normal prompt
-        let final_content = display_content;
-
-        // Print the content
-        queue!(io::stdout(), crossterm::style::Print(final_content))?;
-
-        // Position cursor correctly
-        let cursor_col = if prompt_len + buffer_len <= width {
-            (prompt_len + self.cursor_pos) as u16
+        
+        for (i, &ch) in buffer_chars.iter().enumerate().skip(scroll_offset) {
+            if current_row >= height {
+                break;
+            }
+            
+            // Check if we need to wrap
+            if current_col >= width {
+                current_row += 1;
+                current_col = 0;
+                if current_row >= height {
+                    break;
+                }
+                queue!(io::stdout(), cursor::MoveTo(0, current_row))?;
+            }
+            
+            queue!(io::stdout(), crossterm::style::Print(ch))?;
+            current_col += 1;
+            char_index = i + 1;
+        }
+        
+        // Show indicator if there's more content
+        if scroll_offset > 0 || char_index < buffer_len {
+            // There's hidden content
+        }
+        
+        // Calculate cursor position
+        let cursor_pos_in_view = self.cursor_pos.saturating_sub(scroll_offset);
+        let cursor_row;
+        let cursor_col;
+        
+        if cursor_pos_in_view == 0 {
+            cursor_row = start_row;
+            cursor_col = prompt_len as u16;
         } else {
-            let available_width = width.saturating_sub(prompt_len);
-            if available_width == 0 {
-                prompt_len as u16
-            } else if self.cursor_pos < available_width {
-                (prompt_len + self.cursor_pos) as u16
+            // First line can hold (width - prompt_len) chars
+            let first_line_capacity = width.saturating_sub(prompt_len);
+            
+            if cursor_pos_in_view <= first_line_capacity {
+                cursor_row = start_row;
+                cursor_col = (prompt_len + cursor_pos_in_view) as u16;
             } else {
-                (prompt_len + available_width - 1) as u16
+                // Calculate which line and column
+                let remaining = cursor_pos_in_view - first_line_capacity;
+                let extra_lines = remaining / width;
+                let col_in_line = remaining % width;
+                cursor_row = start_row + 1 + extra_lines as u16;
+                cursor_col = col_in_line as u16;
             }
-        };
-
-        queue!(io::stdout(), cursor::MoveToColumn(cursor_col))?;
+        }
+        
+        // Position cursor
+        if cursor_row < height {
+            queue!(io::stdout(), cursor::MoveTo(cursor_col, cursor_row))?;
+        }
+        
         io::stdout().flush()?;
         Ok(())
     }
@@ -352,22 +446,32 @@ impl InputHandler {
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<Option<String>> {
         match key.code {
             KeyCode::Enter => {
-                // Check if input is blocked (AI is responding)
-                if self.use_full_duplex && self.input_blocker.is_blocked() {
-                    // Show blocked feedback and don't submit
-                    self.show_blocked_feedback()?;
+                // If buffer is empty, don't do anything
+                if self.buffer.trim().is_empty() {
                     return Ok(None);
                 }
 
-                // Submit input
+                // Check if input is blocked (AI is responding)
+                if self.use_full_duplex && self.input_blocker.is_blocked() {
+                    // Queue the input for later processing instead of blocking
+                    let input = self.buffer.clone();
+                    self.input_blocker.queue_input(input.clone());
+                    self.buffer.clear();
+                    self.cursor_pos = 0;
+                    self.history_index = None;
+                    self.temp_buffer = None;
+                    
+                    // Show queued feedback
+                    self.show_queued_feedback()?;
+                    return Ok(None);
+                }
+
+                // Submit input immediately
                 let input = self.buffer.clone();
                 self.buffer.clear();
                 self.cursor_pos = 0;
                 self.history_index = None;
                 self.temp_buffer = None;
-
-                // Don't add newline here - main.rs will handle layout for AI response
-                // This prevents extra blank lines after user submits input
 
                 Ok(Some(input))
             }
@@ -596,7 +700,7 @@ impl InputHandler {
         self.cursor_pos = self.buffer.chars().count();
     }
 
-    /// Show visual feedback when input is blocked
+    /// Show visual feedback when input is blocked (legacy - now we queue instead)
     fn show_blocked_feedback(&mut self) -> io::Result<()> {
         if !self.use_full_duplex {
             return Ok(());
@@ -618,65 +722,469 @@ impl InputHandler {
         Ok(())
     }
 
-    /// Read input with full-duplex mode (non-blocking keyboard polling)
-    pub fn read_input_full_duplex(&mut self) -> io::Result<Option<String>> {
+    /// Show visual feedback when input is queued
+    fn show_queued_feedback(&mut self) -> io::Result<()> {
         if !self.use_full_duplex {
-            return self.read_input_with_menu_detection();
+            return Ok(());
         }
 
-        loop {
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
+        let (_, height) = terminal::size()?;
+        let bottom_line = height.saturating_sub(1);
+
+        queue!(
+            io::stdout(),
+            cursor::MoveTo(0, bottom_line),
+            terminal::Clear(ClearType::CurrentLine),
+            crossterm::style::Print("📝 Message queued - will send after AI finishes"),
+        )?;
+        io::stdout().flush()?;
+
+        std::thread::sleep(Duration::from_millis(800));
+        self.draw_input_line()?;
+        Ok(())
+    }
+
+    /// Poll for a single key event (non-blocking)
+    /// Returns Some(input) if Enter was pressed, None otherwise
+    pub fn poll_key_event(&mut self) -> io::Result<Option<String>> {
+        if event::poll(Duration::from_millis(0))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
                     if let Some(input) = self.handle_key(key)? {
                         // Check for special signals
                         if input == "__ESC__" {
-                            return Ok(None); // Cancel signal
+                            return Ok(Some("__MENU__".to_string()));
                         }
                         if input == "__CTRL_C__" || input == "__CTRL_D__" {
-                            return Ok(Some(input)); // Control signals
+                            return Ok(Some(input));
+                        }
+                        // Check for menu trigger
+                        if input == "m" {
+                            return Ok(Some("__MENU__".to_string()));
                         }
                         return Ok(Some(input));
                     }
                 }
             }
         }
+        Ok(None)
     }
 
-    /// Read input with menu detection using simple stdin
-    /// Returns: Some(input) for normal input, None for menu triggers
-    pub fn read_input_with_menu_detection(&mut self) -> io::Result<Option<String>> {
+    /// Async read input - yields to tokio runtime between polls
+    /// This is the PRIMARY method for reading input in async context
+    pub async fn read_input_async(&mut self) -> io::Result<Option<String>> {
+        // Draw initial input line
+        self.draw_input_line()?;
+        
+        loop {
+            // Poll for key events (non-blocking)
+            match self.poll_key_event() {
+                Ok(Some(input)) => {
+                    // Input received
+                    if !input.is_empty() {
+                        self.add_to_history(input.clone());
+                    }
+                    return Ok(Some(input));
+                }
+                Ok(None) => {
+                    // No input yet, yield to tokio runtime
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Legacy blocking read (for non-async contexts)
+    pub fn read_input(&mut self) -> io::Result<Option<String>> {
         if self.use_full_duplex {
-            return self.read_input_full_duplex();
-        }
+            // Use polling loop for full-duplex mode
+            self.draw_input_line()?;
+            loop {
+                if event::poll(Duration::from_millis(10))? {
+                    if let Event::Key(key) = event::read()? {
+                        if key.kind == KeyEventKind::Press {
+                            if let Some(input) = self.handle_key(key)? {
+                                if input == "__ESC__" || input == "m" {
+                                    return Ok(Some("__MENU__".to_string()));
+                                }
+                                if !input.is_empty() {
+                                    self.add_to_history(input.clone());
+                                }
+                                return Ok(Some(input));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Simple stdin read for non-full-duplex mode
+            print!("{} ", self.prompt);
+            io::stdout().flush()?;
 
-        print!("{} ", self.prompt);
+            let mut input = String::new();
+            match io::stdin().read_line(&mut input) {
+                Ok(0) => Ok(Some(String::new())),
+                Ok(_) => {
+                    let input = input.trim();
+                    if input == "m" || input == "esc" || input == "escape" {
+                        return Ok(Some("__MENU__".to_string()));
+                    }
+                    if !input.is_empty() {
+                        self.add_to_history(input.to_string());
+                    }
+                    Ok(Some(input.to_string()))
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Deprecated: Use read_input_async() instead
+    #[deprecated(note = "Use read_input_async() for async contexts or read_input() for sync")]
+    pub fn read_input_with_menu_detection(&mut self) -> io::Result<Option<String>> {
+        self.read_input()
+    }
+}
+
+/// Input event types for the async channel
+#[derive(Debug, Clone)]
+pub enum InputEvent {
+    /// User submitted input (pressed Enter)
+    Input(String),
+    /// Menu requested (ESC or 'm')
+    Menu,
+    /// Ctrl+C pressed
+    Interrupt,
+    /// Ctrl+D pressed (EOF)
+    Eof,
+}
+
+/// Shared input state for coordinating between input task and main thread
+#[derive(Clone)]
+pub struct SharedInputState {
+    buffer: Arc<Mutex<String>>,
+    cursor_pos: Arc<Mutex<usize>>,
+    output_active: Arc<Mutex<bool>>,  // True when AI output is streaming
+    prompt: String,
+    use_full_duplex: bool,
+}
+
+impl SharedInputState {
+    pub fn new(prompt: &str) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(String::new())),
+            cursor_pos: Arc::new(Mutex::new(0)),
+            output_active: Arc::new(Mutex::new(false)),
+            prompt: prompt.to_string(),
+            use_full_duplex: true,
+        }
+    }
+
+    /// Get current buffer content
+    pub fn get_buffer(&self) -> String {
+        self.buffer.lock().map(|b| b.clone()).unwrap_or_default()
+    }
+
+    /// Get current cursor position
+    pub fn get_cursor_pos(&self) -> usize {
+        self.cursor_pos.lock().map(|p| *p).unwrap_or(0)
+    }
+
+    /// Check if output is currently active (suppress input drawing)
+    pub fn is_output_active(&self) -> bool {
+        self.output_active.lock().map(|a| *a).unwrap_or(false)
+    }
+
+    /// Set output active state
+    pub fn set_output_active(&self, active: bool) {
+        if let Ok(mut a) = self.output_active.lock() {
+            *a = active;
+        }
+    }
+
+    /// Clear the input line from screen (call before printing output)
+    pub fn clear_line(&self) -> io::Result<()> {
+        if !self.use_full_duplex {
+            return Ok(());
+        }
+        // Move to start of line and clear it
+        print!("\r\x1b[K");
         io::stdout().flush()?;
+        Ok(())
+    }
 
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => {
-                // EOF
-                return Ok(Some(String::new()));
-            }
-            Ok(_) => {
-                let input = input.trim();
-
-                // Check for menu triggers
-                if input == "m" {
-                    return Ok(None);
-                }
-                if input == "esc" || input == "escape" {
-                    return Ok(None);
-                }
-
-                if !input.is_empty() {
-                    self.add_to_history(input.to_string());
-                    return Ok(Some(input.to_string()));
-                }
-
-                return Ok(Some(String::new()));
-            }
-            Err(e) => return Err(e),
+    /// Redraw the input line (call after printing output)
+    /// This prints a newline first to move to a fresh line
+    pub fn redraw(&self) -> io::Result<()> {
+        if !self.use_full_duplex {
+            return Ok(());
         }
+        
+        let buffer = self.get_buffer();
+        let cursor_pos = self.get_cursor_pos();
+        
+        // Move to new line and print prompt with any buffered content
+        print!("\n{}{}", self.prompt, buffer);
+        
+        // Position cursor correctly (only if not at end)
+        let buffer_len = buffer.chars().count();
+        if cursor_pos < buffer_len {
+            let move_back = buffer_len - cursor_pos;
+            print!("\x1b[{}D", move_back);
+        }
+        
+        io::stdout().flush()?;
+        Ok(())
+    }
+}
+
+/// Async input stream that runs input handling in a separate task
+pub struct AsyncInputReader {
+    rx: mpsc::UnboundedReceiver<InputEvent>,
+    shared_state: SharedInputState,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+impl AsyncInputReader {
+    /// Create a new async input reader
+    /// Spawns a background task to handle keyboard input
+    pub fn new(handler: InputHandler) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let shared_state = SharedInputState::new(&handler.prompt);
+        let state_clone = shared_state.clone();
+        
+        // Clone handler fields we need
+        let prompt = handler.prompt.clone();
+        let mut buffer = handler.buffer.clone();
+        let mut cursor_pos = handler.cursor_pos;
+        let mut history = handler.history.clone();
+        let mut history_index: Option<usize> = None;
+        let mut temp_buffer: Option<String> = None;
+        let input_blocker = handler.input_blocker.clone();
+        
+        let handle = tokio::spawn(async move {
+            // Don't print initial prompt - main.rs already printed startup messages
+            // The prompt will be shown after the first redraw
+            
+            loop {
+                // Poll for key events (non-blocking)
+                if event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                    if let Ok(Event::Key(key)) = event::read() {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        
+                        match key.code {
+                            KeyCode::Enter => {
+                                if buffer.trim().is_empty() {
+                                    continue;
+                                }
+                                
+                                // Check if blocked - queue input instead
+                                if input_blocker.is_blocked() {
+                                    input_blocker.queue_input(buffer.clone());
+                                    buffer.clear();
+                                    cursor_pos = 0;
+                                    
+                                    // Update shared state
+                                    if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                    if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                    
+                                    // Show queued feedback briefly
+                                    print!("\r\x1b[K📝 Message queued");
+                                    let _ = io::stdout().flush();
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    print!("\r\x1b[K{}", prompt);
+                                    let _ = io::stdout().flush();
+                                    continue;
+                                }
+                                
+                                let input = buffer.clone();
+                                
+                                // Add to history
+                                if !input.trim().is_empty() {
+                                    if history.back() != Some(&input) {
+                                        history.push_back(input.clone());
+                                        if history.len() > 1000 {
+                                            history.pop_front();
+                                        }
+                                    }
+                                }
+                                
+                                buffer.clear();
+                                cursor_pos = 0;
+                                history_index = None;
+                                temp_buffer = None;
+                                
+                                // Update shared state
+                                if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                
+                                // Send input event
+                                let event = InputEvent::Input(input);
+                                if tx.send(event).is_err() {
+                                    break;
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    match c {
+                                        'c' | 'C' => {
+                                            buffer.clear();
+                                            cursor_pos = 0;
+                                            let _ = tx.send(InputEvent::Interrupt);
+                                        }
+                                        'd' | 'D' => {
+                                            if buffer.is_empty() {
+                                                let _ = tx.send(InputEvent::Eof);
+                                            }
+                                        }
+                                        'u' | 'U' => {
+                                            buffer.clear();
+                                            cursor_pos = 0;
+                                        }
+                                        'a' | 'A' => cursor_pos = 0,
+                                        'e' | 'E' => cursor_pos = buffer.chars().count(),
+                                        _ => {}
+                                    }
+                                } else {
+                                    // Insert character
+                                    let chars: Vec<char> = buffer.chars().collect();
+                                    let mut new_buffer = String::new();
+                                    new_buffer.extend(chars[..cursor_pos].iter());
+                                    new_buffer.push(c);
+                                    new_buffer.extend(chars[cursor_pos..].iter());
+                                    buffer = new_buffer;
+                                    cursor_pos += 1;
+                                }
+                                
+                                // Update shared state
+                                if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                
+                                // Always redraw - use carriage return to overwrite current line
+                                print!("\r\x1b[K{}{}", prompt, buffer);
+                                let cursor_col = prompt.chars().count() + cursor_pos;
+                                print!("\r\x1b[{}C", cursor_col);
+                                let _ = io::stdout().flush();
+                            }
+                            KeyCode::Backspace => {
+                                if cursor_pos > 0 {
+                                    let chars: Vec<char> = buffer.chars().collect();
+                                    let mut new_buffer = String::new();
+                                    new_buffer.extend(chars[..(cursor_pos - 1)].iter());
+                                    new_buffer.extend(chars[cursor_pos..].iter());
+                                    buffer = new_buffer;
+                                    cursor_pos -= 1;
+                                    
+                                    if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                    if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                    
+                                    print!("\r\x1b[K{}{}", prompt, buffer);
+                                    let cursor_col = prompt.chars().count() + cursor_pos;
+                                    print!("\r\x1b[{}C", cursor_col);
+                                    let _ = io::stdout().flush();
+                                }
+                            }
+                            KeyCode::Left => {
+                                if cursor_pos > 0 {
+                                    cursor_pos -= 1;
+                                    if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                    print!("\x1b[D");
+                                    let _ = io::stdout().flush();
+                                }
+                            }
+                            KeyCode::Right => {
+                                if cursor_pos < buffer.chars().count() {
+                                    cursor_pos += 1;
+                                    if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                    print!("\x1b[C");
+                                    let _ = io::stdout().flush();
+                                }
+                            }
+                            KeyCode::Up => {
+                                if !history.is_empty() {
+                                    if history_index.is_none() {
+                                        temp_buffer = Some(buffer.clone());
+                                        history_index = Some(history.len() - 1);
+                                    } else if let Some(idx) = history_index {
+                                        if idx > 0 {
+                                            history_index = Some(idx - 1);
+                                        }
+                                    }
+                                    if let Some(idx) = history_index {
+                                        buffer = history[idx].clone();
+                                        cursor_pos = buffer.chars().count();
+                                        
+                                        if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                        if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                        
+                                        print!("\r\x1b[K{}{}", prompt, buffer);
+                                        let _ = io::stdout().flush();
+                                    }
+                                }
+                            }
+                            KeyCode::Down => {
+                                if let Some(idx) = history_index {
+                                    if idx < history.len() - 1 {
+                                        history_index = Some(idx + 1);
+                                        buffer = history[idx + 1].clone();
+                                    } else {
+                                        history_index = None;
+                                        buffer = temp_buffer.take().unwrap_or_default();
+                                    }
+                                    cursor_pos = buffer.chars().count();
+                                    
+                                    if let Ok(mut b) = state_clone.buffer.lock() { *b = buffer.clone(); }
+                                    if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                    
+                                    print!("\r\x1b[K{}{}", prompt, buffer);
+                                    let _ = io::stdout().flush();
+                                }
+                            }
+                            KeyCode::Esc => {
+                                let _ = tx.send(InputEvent::Menu);
+                            }
+                            KeyCode::Home => {
+                                cursor_pos = 0;
+                                if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                let cursor_col = prompt.chars().count();
+                                print!("\r\x1b[{}C", cursor_col);
+                                let _ = io::stdout().flush();
+                            }
+                            KeyCode::End => {
+                                cursor_pos = buffer.chars().count();
+                                if let Ok(mut p) = state_clone.cursor_pos.lock() { *p = cursor_pos; }
+                                let cursor_col = prompt.chars().count() + cursor_pos;
+                                print!("\r\x1b[{}C", cursor_col);
+                                let _ = io::stdout().flush();
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // No input, yield to runtime
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        });
+        
+        Self { rx, shared_state, _handle: handle }
+    }
+    
+    /// Get shared state for clearing/redrawing input line
+    pub fn shared_state(&self) -> &SharedInputState {
+        &self.shared_state
+    }
+    
+    /// Receive the next input event
+    pub async fn recv(&mut self) -> Option<InputEvent> {
+        self.rx.recv().await
+    }
+    
+    /// Try to receive an input event without blocking
+    pub fn try_recv(&mut self) -> Option<InputEvent> {
+        self.rx.try_recv().ok()
     }
 }

@@ -136,9 +136,7 @@ impl DynamicMcpRegistry {
 
         // Get all configured MCP servers
         let mcp_servers = config.get_mcp_servers();
-        eprintln!("🔧 MCP Discovery: Found {} configured MCP servers", mcp_servers.len());
         for server_id in mcp_servers.keys() {
-            eprintln!("🔧 MCP Discovery: - {}", server_id);
         }
 
         // Discover tools from all configured MCP servers
@@ -146,15 +144,12 @@ impl DynamicMcpRegistry {
         let mut all_servers = Vec::new();
 
         for (server_id, server_config) in mcp_servers {
-            eprintln!("🔧 MCP Discovery: Attempting to connect to server '{}' at {}", server_id, server_config.url);
             match self.discover_server_tools(server_id, server_config).await {
                 Ok(server_info) => {
-                    eprintln!("✅ MCP Discovery: Successfully discovered {} tools from server '{}'", server_info.tools.len(), server_id);
                     total_servers += 1;
                     all_servers.push(server_info);
                 }
                 Err(e) => {
-                    eprintln!("❌ MCP Discovery: Failed to discover MCP server '{}': {}", server_id, e);
                 }
             }
         }
@@ -162,7 +157,6 @@ impl DynamicMcpRegistry {
         // Store discovered servers
         *self.discovered_servers.write().await = all_servers;
 
-        eprintln!("🔧 MCP Discovery: Total successfully connected servers: {}", total_servers);
         Ok(total_servers)
     }
 
@@ -232,22 +226,13 @@ pub async fn register_dynamic_mcp_tools(registry: &mut crate::api::agent::ToolRe
     let server_tools = DYNAMIC_MCP_REGISTRY.get_server_tools().await;
     let count = server_tools.len();
 
-    eprintln!("🔧 MCP Registration: Attempting to register {} server tools", count);
-
     let mut registered_count = 0;
     for tool in server_tools {
         // Only register tools for servers that have actual tools discovered
         if !tool.server_info.tools.is_empty() {
-            eprintln!("✅ MCP Registration: Registering tool '{}' for server '{}' with {} available tools",
-                     tool.tool_name, tool.server_info.server_id, tool.server_info.tools.len());
             registry.register(tool);
             registered_count += 1;
-        } else {
-            eprintln!("⚠️ MCP Registration: Skipping tool '{}' for server '{}' - no tools discovered",
-                     tool.tool_name, tool.server_info.server_id);
         }
     }
-
-    eprintln!("🔧 MCP Registration: Successfully registered {} MCP tools", registered_count);
     Ok(registered_count)
 }
