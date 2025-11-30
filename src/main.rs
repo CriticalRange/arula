@@ -214,27 +214,57 @@ async fn process_ai_request(
     output: &mut OutputHandler,
     response_display: &mut ResponseDisplay,
 ) -> Result<()> {
+    use crate::ui::ThinkingWidget;
+    
     match app.send_to_ai(input).await {
         Ok(_) => {
             let mut response_text = String::new();
             let mut stream_started = false;
+            let mut thinking_widget = ThinkingWidget::new();
             // Track tool calls by ID to get the tool name for results
             let mut pending_tools: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
             // Poll for AI responses
             loop {
+                // Update thinking animation if active
+                if thinking_widget.is_active() {
+                    let _ = thinking_widget.pulse();
+                }
+                
                 if let Some(response) = app.check_ai_response_nonblocking() {
                     match response {
                         app::AiResponse::AgentStreamStart => {
                             response_text.clear();
                             stream_started = true;
-                            io::stdout().flush()?;
+                            // Initialize the markdown streamer for new response
+                            let _ = output.start_ai_stream();
+                        }
+                        app::AiResponse::AgentThinkingStart => {
+                            // Start the thinking widget with pulsing animation
+                            let _ = thinking_widget.start();
+                        }
+                        app::AiResponse::AgentThinkingContent(content) => {
+                            // Add content to thinking widget
+                            let _ = thinking_widget.add_content(&content);
+                        }
+                        app::AiResponse::AgentThinkingEnd => {
+                            // Finish thinking and display the thought
+                            let _ = thinking_widget.finish();
                         }
                         app::AiResponse::AgentStreamText(chunk) => {
+                            // If thinking is still active, finish it first
+                            if thinking_widget.is_active() {
+                                let _ = thinking_widget.finish();
+                            }
                             response_text.push_str(&chunk);
-                            let _ = output.stream_ai_response(&chunk);
+                            // Use stream_chunk for proper markdown rendering
+                            let _ = output.stream_chunk(&chunk);
                         }
                         app::AiResponse::AgentToolCall { id, name, arguments } => {
+                            // Finish thinking if active
+                            if thinking_widget.is_active() {
+                                let _ = thinking_widget.finish();
+                            }
                             if stream_started && !response_text.is_empty() {
                                 let _ = output.finalize_stream();
                                 response_text.clear();
@@ -253,16 +283,23 @@ async fn process_ai_request(
                             };
                             let _ = response_display.display_tool_result(&tool_call_id, &tool_name, &tool_result);
                         }
-                        app::AiResponse::AgentReasoningContent(_) => {
-                            // Ignore reasoning content
+                        app::AiResponse::AgentReasoningContent(content) => {
+                            // Legacy reasoning content - show in thinking widget
+                            if !thinking_widget.is_active() {
+                                let _ = thinking_widget.start();
+                            }
+                            let _ = thinking_widget.add_content(&content);
                         }
                         app::AiResponse::AgentStreamEnd => {
+                            // Finish thinking if still active
+                            if thinking_widget.is_active() {
+                                let _ = thinking_widget.finish();
+                            }
                             if stream_started {
                                 let _ = output.finalize_stream();
                             }
                             break;
                         }
-                        _ => {}
                     }
                 } else {
                     // Yield to allow other async tasks to run

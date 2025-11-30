@@ -57,6 +57,9 @@ impl ResponseDisplay {
 
     /// Display a tool call with pulse animation on the tool name
     pub fn display_tool_call_start(&mut self, id: &str, name: &str, arguments: &str) -> io::Result<()> {
+        // Add spacing before tool call for better readability
+        println!();
+        
         let icon = self.get_tool_icon(name);
         let display_name = self.get_tool_display_name(name);
         let formatted_args = self.format_tool_arguments_detailed(name, arguments);

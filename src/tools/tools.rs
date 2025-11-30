@@ -6,8 +6,6 @@ use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command as TokioCommand;
 use console::style;
-use regex;
-use base64::Engine;
 
 /// Parameters for the bash tool
 #[derive(Debug, Deserialize)]
@@ -4652,7 +4650,7 @@ pub async fn initialize_mcp_tools(registry: &mut crate::api::agent::ToolRegistry
     use crate::tools::mcp_dynamic;
 
     match mcp_dynamic::initialize_dynamic_mcp_tools(config).await {
-        Ok(tool_count) => {
+        Ok(_tool_count) => {
             if let Err(e) = mcp_dynamic::register_dynamic_mcp_tools(registry).await {
                 return Err(e);
             } else {

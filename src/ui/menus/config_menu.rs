@@ -58,7 +58,7 @@ impl ConfigMenuItem {
             ConfigMenuItem::AIModel => "Choose AI model to use",
             ConfigMenuItem::APIUrl => "Set custom API endpoint URL",
             ConfigMenuItem::APIKey => "Configure API authentication key",
-            ConfigMenuItem::ThinkingMode => "Toggle Z.AI thinking mode (show reasoning)",
+            ConfigMenuItem::ThinkingMode => "Toggle thinking mode (show AI reasoning)",
             ConfigMenuItem::WebSearch => "Toggle web search provider (DuckDuckGo/Z.AI)",
         }
     }
@@ -552,15 +552,8 @@ impl ConfigMenu {
     }
 
 
-    /// Toggle thinking mode for Z.AI
+    /// Toggle thinking mode for AI providers
     fn toggle_thinking_mode(&mut self, app: &mut App, output: &mut OutputHandler) -> Result<()> {
-        // Only allow thinking mode for Z.AI provider
-        if !app.config.active_provider.contains("z.ai") {
-            output.print_system("💭 Thinking mode is only available for Z.AI provider")?;
-            output.print_system("ℹ Please switch to Z.AI provider first")?;
-            return Ok(());
-        }
-
         let current_enabled = app.config.get_active_provider_config()
             .and_then(|c| c.thinking_enabled)
             .unwrap_or(false);
@@ -576,10 +569,11 @@ impl ConfigMenu {
             output.print_error(&format!("Failed to save configuration: {}", e))?;
         }
 
+        let provider_name = &app.config.active_provider;
         if new_enabled {
-            output.print_system("💭 Thinking mode enabled - Z.AI will show reasoning")?;
+            output.print_system(&format!("💭 Thinking mode enabled for {} - AI will show reasoning", provider_name))?;
         } else {
-            output.print_system("💭 Thinking mode disabled - Z.AI will give direct answers")?;
+            output.print_system(&format!("💭 Thinking mode disabled for {} - AI will give direct answers", provider_name))?;
         }
 
         Ok(())

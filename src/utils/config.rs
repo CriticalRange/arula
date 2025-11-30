@@ -171,14 +171,20 @@ impl Config {
     }
 
     pub fn get_config_path() -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        // Use cross-platform home directory detection
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))  // Windows
+            .unwrap_or_else(|_| ".".to_string());
         format!("{}/.arula/config.json", home)
     }
 
     pub fn load_or_default() -> Result<Self> {
         let config_path = Self::get_config_path();
         let config_file = Path::new(&config_path);
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        // Use cross-platform home directory detection
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))  // Windows
+            .unwrap_or_else(|_| ".".to_string());
         let old_yaml_path = format!("{}/.arula/config.yaml", home);
 
         // Try to load JSON config first
@@ -274,8 +280,8 @@ impl Config {
         Ok(())
     }
 
-    /// Get Z.AI specific thinking mode setting
-    pub fn get_zai_thinking_enabled(&self) -> Option<bool> {
+    /// Get thinking mode setting for the active provider
+    pub fn get_thinking_enabled(&self) -> Option<bool> {
         if let Some(config) = self.get_active_provider_config() {
             config.thinking_enabled
         } else {
@@ -283,13 +289,23 @@ impl Config {
         }
     }
 
-    /// Set Z.AI thinking mode
-    pub fn set_zai_thinking_enabled(&mut self, enabled: bool) -> Result<()> {
+    /// Alias for backward compatibility
+    pub fn get_zai_thinking_enabled(&self) -> Option<bool> {
+        self.get_thinking_enabled()
+    }
+
+    /// Set thinking mode for the active provider
+    pub fn set_thinking_enabled(&mut self, enabled: bool) -> Result<()> {
         if let Some(config) = self.get_active_provider_config_mut() {
             config.thinking_enabled = Some(enabled);
         }
         self.save_to_file(Self::get_config_path())?;
         Ok(())
+    }
+
+    /// Alias for backward compatibility
+    pub fn set_zai_thinking_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.set_thinking_enabled(enabled)
     }
 
     /// Get Z.AI web search enabled setting

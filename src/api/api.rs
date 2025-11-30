@@ -490,12 +490,24 @@ impl ApiClient {
     async fn send_openai_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
         // NOTE: Tools are intentionally NOT included here to allow normal conversation
         // Tools are only added when explicitly needed via send_message_with_tools
-        let request_body = serde_json::json!({
+        
+        // Check if thinking/reasoning is enabled
+        let config = crate::utils::config::Config::load_or_default()?;
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
+        
+        let mut request_body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 2048
         });
+        
+        // Add reasoning effort when thinking is enabled
+        // OpenAI's reasoning_effort parameter works with GPT-5.1 and reasoning models
+        // Note: Not supported for o3/o4-mini (they always reason), but adding it won't hurt
+        if thinking_enabled {
+            request_body["reasoning_effort"] = serde_json::json!("medium");
+        }
 
         let request_url = format!("{}/chat/completions", self.endpoint);
         let mut request_builder = self
@@ -558,6 +570,17 @@ impl ApiClient {
                     } else {
                         None
                     };
+                    
+                    // Extract reasoning content if present (for reasoning models)
+                    let reasoning_content = choice["message"]["reasoning_content"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            // Also check response-level reasoning
+                            response_json["reasoning"]["summary"]
+                                .as_str()
+                                .map(|s| s.to_string())
+                        });
 
                     Ok(ApiResponse {
                         response: content,
@@ -567,7 +590,7 @@ impl ApiClient {
                         tool_calls,
                         model: Some(self.model.clone()),
                         created: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()),
-                        reasoning_content: None,
+                        reasoning_content,
                     })
                 } else {
                     Ok(ApiResponse {
@@ -603,6 +626,10 @@ impl ApiClient {
     }
 
     async fn send_claude_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
+        // Check if thinking is enabled
+        let config = crate::utils::config::Config::load_or_default()?;
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
+        
         let claude_messages: Vec<Value> = messages
             .into_iter()
             .map(|msg| {
@@ -613,12 +640,23 @@ impl ApiClient {
             })
             .collect();
 
-        let request = json!({
+        let mut request = json!({
             "model": self.model,
             "messages": claude_messages,
             "max_tokens": 2048,
             "temperature": 0.7
         });
+        
+        // Add extended thinking for Claude when enabled
+        // Claude uses "thinking" block with budget_tokens
+        if thinking_enabled {
+            request["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": 10000
+            });
+            // Extended thinking requires higher max_tokens
+            request["max_tokens"] = json!(16000);
+        }
 
         let request_url = format!("{}/v1/messages", self.endpoint);
         let mut request_builder = self
@@ -652,19 +690,38 @@ impl ApiClient {
             let claude_response: Value = response.json().await?;
 
             if let Some(content) = claude_response["content"].as_array() {
-                if let Some(text_block) = content.first() {
-                    if let Some(text) = text_block["text"].as_str() {
-                        return Ok(ApiResponse {
-                            response: text.to_string(),
-                            success: true,
-                            error: None,
-                            usage: None, // Claude has different usage format
-                            tool_calls: None,
-                            model: Some(self.model.clone()),
-                            created: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()),
-                            reasoning_content: None,
-                        });
+                let mut response_text = String::new();
+                let mut thinking_text: Option<String> = None;
+                
+                // Parse content blocks - Claude can return thinking and text blocks
+                for block in content {
+                    match block["type"].as_str() {
+                        Some("thinking") => {
+                            // Capture thinking content
+                            if let Some(thinking) = block["thinking"].as_str() {
+                                thinking_text = Some(thinking.to_string());
+                            }
+                        }
+                        Some("text") => {
+                            if let Some(text) = block["text"].as_str() {
+                                response_text.push_str(text);
+                            }
+                        }
+                        _ => {}
                     }
+                }
+                
+                if !response_text.is_empty() || thinking_text.is_some() {
+                    return Ok(ApiResponse {
+                        response: response_text,
+                        success: true,
+                        error: None,
+                        usage: None, // Claude has different usage format
+                        tool_calls: None,
+                        model: Some(self.model.clone()),
+                        created: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()),
+                        reasoning_content: thinking_text,
+                    });
                 }
             }
 
@@ -688,6 +745,10 @@ impl ApiClient {
     }
 
     async fn send_ollama_request(&self, messages: Vec<ChatMessage>) -> Result<ApiResponse> {
+        // Check if thinking is enabled
+        let config = crate::utils::config::Config::load_or_default()?;
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
+        
         // Convert messages to Ollama format
         let prompt = messages
             .iter()
@@ -701,7 +762,7 @@ impl ApiClient {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let request = json!({
+        let mut request = json!({
             "model": self.model,
             "prompt": prompt,
             "stream": false,
@@ -710,6 +771,12 @@ impl ApiClient {
                 "num_predict": 2048
             }
         });
+        
+        // Add think option for Ollama when enabled
+        // Works with models like deepseek-r1, qwq, etc.
+        if thinking_enabled {
+            request["think"] = json!(true);
+        }
 
         let request_url = format!("{}/api/generate", self.endpoint);
         let request_builder = self
@@ -730,6 +797,11 @@ impl ApiClient {
         if response.status().is_success() {
             let ollama_response: Value = response.json().await?;
 
+            // Extract thinking content if present (for models like deepseek-r1)
+            let thinking_content = ollama_response["message"]["thinking"]
+                .as_str()
+                .map(|s| s.to_string());
+
             if let Some(response_text) = ollama_response["response"].as_str() {
                 Ok(ApiResponse {
                     response: response_text.to_string(),
@@ -739,7 +811,7 @@ impl ApiClient {
                     tool_calls: None,
                     model: Some(self.model.clone()),
                     created: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()),
-                    reasoning_content: None,
+                    reasoning_content: thinking_content,
                 })
             } else {
                 Ok(ApiResponse {
@@ -750,7 +822,7 @@ impl ApiClient {
                     tool_calls: None,
                     model: Some(self.model.clone()),
                     created: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()),
-                    reasoning_content: None,
+                    reasoning_content: thinking_content,
                 })
             }
         } else {
@@ -767,7 +839,7 @@ impl ApiClient {
         let config = crate::utils::config::Config::load_or_default()?;
         let max_retries = config.get_zai_max_retries();
         let timeout = Duration::from_secs(config.get_zai_timeout_seconds());
-        let thinking_enabled = config.get_zai_thinking_enabled().unwrap_or(false);
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
         let usage_tracking = config.get_zai_usage_tracking_enabled().unwrap_or(true);
 
         // Convert ChatMessage format to plain objects for Z.AI
@@ -1347,6 +1419,111 @@ impl ApiClient {
         }
     }
 
+    /// Send message with true SSE streaming (OpenAI-compatible)
+    ///
+    /// This method enables real Server-Sent Events streaming for:
+    /// - Real-time text output as it's generated
+    /// - Proper tool call delta accumulation
+    /// - Usage statistics via stream_options
+    ///
+    /// # Arguments
+    ///
+    /// * `messages` - Conversation messages
+    /// * `tools` - Available tool definitions
+    /// * `callback` - Function called for each stream event
+    ///
+    /// # Returns
+    ///
+    /// The final accumulated response with all content and tool calls
+    pub async fn send_message_streaming<F>(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        callback: F,
+    ) -> Result<ApiResponse>
+    where
+        F: FnMut(crate::api::streaming::StreamEvent) + Send,
+    {
+        use crate::api::streaming::{build_streaming_request, process_stream};
+
+        // Convert ChatMessage to JSON format
+        let json_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|msg| {
+                let mut obj = serde_json::json!({
+                    "role": msg.role,
+                });
+                
+                if let Some(content) = &msg.content {
+                    obj["content"] = serde_json::json!(content);
+                } else if msg.tool_calls.is_some() {
+                    // Assistant message with tool_calls can have null content
+                    obj["content"] = serde_json::json!(null);
+                }
+                
+                if let Some(tool_calls) = &msg.tool_calls {
+                    obj["tool_calls"] = serde_json::json!(tool_calls);
+                }
+                
+                if let Some(tool_call_id) = &msg.tool_call_id {
+                    obj["tool_call_id"] = serde_json::json!(tool_call_id);
+                }
+                
+                obj
+            })
+            .collect();
+
+        // Build streaming request
+        let tools_ref = if tools.is_empty() { None } else { Some(tools) };
+        let request_body = build_streaming_request(
+            &self.model,
+            &json_messages,
+            tools_ref,
+            0.7,
+            2048,
+        );
+
+        let request_url = format!("{}/chat/completions", self.endpoint);
+        
+        debug_print(&format!("DEBUG: Streaming request to {}", request_url));
+        
+        let mut request_builder = self
+            .client
+            .post(&request_url)
+            .json(&request_body);
+
+        // Add authorization
+        if !self.api_key.is_empty() {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        // Add provider-specific headers
+        match self.provider {
+            AIProvider::OpenRouter => {
+                request_builder = request_builder
+                    .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli")
+                    .header("X-Title", "ARULA CLI");
+            }
+            AIProvider::ZAiCoding => {
+                request_builder = request_builder
+                    .header("Accept-Language", "en-US,en")
+                    .header("HTTP-Referer", "https://github.com/arula-cli/arula-cli");
+            }
+            _ => {}
+        }
+
+        // Send request
+        let response = request_builder.send().await?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("API request failed: {}", error_text));
+        }
+
+        // Process the streaming response
+        process_stream(response, callback).await
+    }
+
     /// Send message with custom tools (used by modern agent client)
     pub async fn send_message_with_tools(
         &self,
@@ -1429,8 +1606,12 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Vec<serde_json::Value>,
     ) -> Result<ApiResponse> {
+        // Check if thinking/reasoning is enabled
+        let config = crate::utils::config::Config::load_or_default()?;
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
+        
         // Create request with custom tools
-        let request_body = serde_json::json!({
+        let mut request_body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
@@ -1438,6 +1619,12 @@ impl ApiClient {
             "tools": tools,
             "tool_choice": "auto"
         });
+        
+        // Add reasoning effort when thinking is enabled
+        // Works with GPT-5.1 and reasoning models; ignored by unsupported models
+        if thinking_enabled {
+            request_body["reasoning_effort"] = serde_json::json!("medium");
+        }
 
         let request_url = format!("{}/chat/completions", self.endpoint);
         let mut request_builder = self
@@ -1565,7 +1752,7 @@ impl ApiClient {
 
         // Get Z.AI configuration from the config file
         let config = crate::utils::config::Config::load_or_default()?;
-        let thinking_enabled = config.get_zai_thinking_enabled().unwrap_or(false);
+        let thinking_enabled = config.get_thinking_enabled().unwrap_or(false);
 
         let max_retries = 3;
         let mut retry_count = 0;
@@ -1973,6 +2160,9 @@ mod tests {
             error: None,
             usage: Some(usage.clone()),
             tool_calls: None,
+            model: Some("test-model".to_string()),
+            created: Some(1234567890),
+            reasoning_content: None,
         };
 
         let json_str = serde_json::to_string(&response).unwrap();
@@ -1995,6 +2185,9 @@ mod tests {
             error: Some("Network error".to_string()),
             usage: None,
             tool_calls: None,
+            model: None,
+            created: None,
+            reasoning_content: None,
         };
 
         let json_str = serde_json::to_string(&response).unwrap();
@@ -2040,6 +2233,9 @@ mod tests {
             error: None,
             usage: None,
             tool_calls: None,
+            model: None,
+            created: None,
+            reasoning_content: None,
         };
         let _end = StreamingResponse::End(api_response);
     }

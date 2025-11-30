@@ -1,39 +1,60 @@
+//! Application state and AI interaction management
+//!
+//! This module contains the main `App` struct that orchestrates all application
+//! functionality including:
+//!
+//! - Configuration management
+//! - AI provider client initialization and communication
+//! - Tool registry and execution
+//! - Conversation history and persistence
+//! - Model caching for responsive model selection
+//! - Git state tracking for branch restoration
+//!
+//! # Architecture
+//!
+//! The `App` struct serves as the central coordinator between:
+//! - `Config` - Settings and provider configuration
+//! - `AgentClient` - AI provider communication
+//! - `ToolRegistry` - Built-in and MCP tools
+//! - `Conversation` - Message history persistence
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use arula_cli::app::App;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let mut app = App::new()?;
+//!     app.initialize_tool_registry().await?;
+//!     app.send_to_ai("Hello, AI!").await?;
+//!     Ok(())
+//! }
+//! ```
+
 use crate::api::agent::{AgentOptionsBuilder, ContentBlock};
 use crate::api::agent_client::AgentClient;
 use crate::utils::chat::{ChatMessage, MessageType};
 use crate::utils::config::Config;
+use crate::utils::debug::{debug_print, log_ai_interaction, log_ai_response_chunk, log_ai_response_complete};
 use crate::utils::git_state::GitStateTracker;
 use crate::utils::tool_call::{execute_bash_tool, ToolCall, ToolCallResult};
 use anyhow::Result;
-use chrono::Utc;
 use futures::StreamExt;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use termimad::MadSkin;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Render markdown inline using termimad for ExternalPrinter output
+/// Render markdown inline using the centralized markdown module
 fn render_markdown_line(line: &str) -> String {
-    let mut skin = MadSkin::default();
-
-    // Configure colors similar to OutputHandler
-    use termimad::crossterm::style::Color as TMColor;
-    skin.bold.set_fg(TMColor::Yellow);
-    skin.italic.set_fg(TMColor::Cyan);
-    skin.inline_code.set_fg(TMColor::Cyan);
-    skin.code_block.set_fg(TMColor::Green);
-
-    // Render inline markdown
-    skin.inline(line).to_string()
+    crate::ui::output::markdown::render_markdown_inline(line)
 }
 
 /// Format a code block with simple borders for ExternalPrinter
 fn format_code_block(content: &str) -> String {
-    use console::Style;
-
     let mut result = String::new();
 
     // Top border
@@ -54,8 +75,6 @@ fn format_code_block(content: &str) -> String {
 
 /// Format tool call with icon and human-readable description
 fn format_tool_call(tool_name: &str, arguments: &str) -> String {
-    use console::Style;
-
     // Parse arguments to extract key information
     let args: Result<Value, _> = serde_json::from_str(arguments);
 
@@ -192,51 +211,19 @@ fn summarize_tool_result(result_value: &Value) -> String {
     serde_json::to_string_pretty(result_value).unwrap_or_else(|_| result_value.to_string())
 }
 
-/// Debug print helper that checks ARULA_DEBUG environment variable
-fn debug_print(msg: &str) {
-    if std::env::var("ARULA_DEBUG").unwrap_or_default() == "1" {
-        println!("🔧 DEBUG: {}", msg);
-        // Also log to file
-        crate::utils::logger::debug(msg);
-    }
-}
-
-/// Log AI request/response to .arula/debug.log for debugging
-fn log_ai_interaction(request: &str, context: &[crate::api::api::ChatMessage], response_start: Option<&str>) {
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    let mut log_msg = format!("\n=== AI Interaction at {} ===\n", timestamp);
-    log_msg.push_str(&format!("USER REQUEST: {}\n", request));
-    log_msg.push_str(&format!("CONTEXT MESSAGES ({} total):\n", context.len()));
-
-    for (i, msg) in context.iter().enumerate() {
-        log_msg.push_str(&format!("  [{}]: {} -> {}\n",
-            i, msg.role,
-            msg.content.as_ref().unwrap_or(&"(no content)".to_string())
-        ));
-    }
-
-    if let Some(start) = response_start {
-        log_msg.push_str(&format!("AI RESPONSE START: {}\n", start));
-    }
-    log_msg.push_str("=====================================\n");
-
-    crate::utils::logger::info(&log_msg);
-}
-
-/// Log AI response chunks to .arula/debug.log
-fn log_ai_response_chunk(chunk: &str) {
-    crate::utils::logger::debug(&format!("AI CHUNK: {}", chunk));
-}
-
-/// Log AI response completion to .arula/debug.log
-fn log_ai_response_complete(final_response: &str) {
-    crate::utils::logger::info(&format!("AI COMPLETE RESPONSE: {}\n=== END AI Interaction ===\n", final_response));
-}
+// Debug utilities are now imported from crate::utils::debug
 
 #[derive(Debug, Clone)]
 pub enum AiResponse {
     AgentStreamStart,
     AgentStreamText(String),
+    /// Thinking/reasoning content started (shows pulsing animation)
+    AgentThinkingStart,
+    /// Thinking/reasoning content chunk
+    AgentThinkingContent(String),
+    /// Thinking/reasoning content ended
+    AgentThinkingEnd,
+    /// Legacy reasoning content (for backward compatibility)
     AgentReasoningContent(String),
     AgentToolCall {
         id: String,
@@ -425,23 +412,30 @@ The user will manually rebuild after exiting the application.
 
         // Add tool calling instructions
         prompt_parts.push(r#"
-## Tool Calling Instructions
+## Tool Usage
 
-**CRITICAL: You must use JSON function call syntax to execute tools!**
+You have access to various tools that you can use to help the user. When you need to perform actions like:
+- Running shell commands
+- Reading or writing files
+- Searching the codebase
+- Listing directories
 
-When you need to use tools, you should output a JSON function call in this exact format:
+**Use the available tools directly through function calls.** The tools will be executed automatically and their results returned to you.
 
-```json
-{"name": "function_name", "parameters": {"param1": "value1", "param2": "value2"}}
-```
+### Available Tools:
+- `execute_bash`: Run shell commands (use for: git, npm, cargo, etc.)
+- `read_file`: Read file contents
+- `write_file`: Create or overwrite files
+- `edit_file`: Make targeted edits to existing files
+- `list_directory`: List files and directories
+- `search_files`: Search for patterns in files
+- `web_search`: Search the web for information
 
-For example:
-- To run a command: `{"name": "execute_bash", "parameters": {"command": "echo hello"}}`
-- To list files: `{"name": "list_directory", "parameters": {"path": "."}}`
-- To read a file: `{"name": "read_file", "parameters": {"path": "README.md"}}`
-
-**NEVER show tool calls in markdown code blocks!** Always use the JSON function call format above.
-**DO NOT call functions directly like `execute_bash(command="echo hello")` - use JSON syntax instead.**
+### Guidelines:
+1. **Use tools proactively** - Don't ask for permission to use tools, just use them
+2. **Chain tools as needed** - Read a file, modify it, write it back
+3. **Handle errors gracefully** - If a tool fails, try an alternative approach
+4. **Be efficient** - Use the most appropriate tool for each task
 "#.to_string());
 
         // Add built-in tools information
@@ -731,6 +725,7 @@ For example:
             // Track message content and tool calls for conversation history
             let mut accumulated_text = String::new();
             let mut tool_calls_list: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
+            let mut thinking_started = false; // Track if we've started thinking mode
 
             tokio::select! {
                 _ = cancel_token.cancelled() => {
@@ -755,6 +750,12 @@ For example:
                                     content_block = stream.next() => {
                                         match content_block {
                                             Some(ContentBlock::Text { text }) => {
+                                                // End thinking mode if it was active
+                                                if thinking_started {
+                                                    let _ = tx.send(AiResponse::AgentThinkingEnd);
+                                                    thinking_started = false;
+                                                }
+                                                
                                                 // Accumulate text for tracking
                                                 accumulated_text.push_str(&text);
 
@@ -762,42 +763,27 @@ For example:
                                                 log_ai_response_chunk(&text);
 
                                                 let _ = tx.send(AiResponse::AgentStreamText(text.clone()));
-                                                // if let Some(ref printer) = external_printer { // External printer removed
-                                                    // TODO: Fix terminal scroll positioning
-                                                    // Currently, content may not scroll to keep input visible at bottom
-                                                    // This needs investigation - may require different approach or reedline config changes
-
-                                                    // Render markdown for each line
-                                                    for line in text.lines() {
-                                                        let rendered = render_markdown_line(line);
-                                                        // let _ = printer.send(format!("{}\n", rendered));
-                                                    }
-                                                    // If text doesn't end with newline, send one anyway
-                                                    if !text.ends_with('\n') && !text.is_empty() {
-                                                        // let _ = printer.send("\n".to_string());
-                                                    }
-                                                // }
                                             }
                                             Some(ContentBlock::Reasoning { reasoning }) => {
-                                                // Send reasoning content to stream
-                                                let _ = tx.send(AiResponse::AgentReasoningContent(reasoning.clone()));
-
-                                                // if let Some(ref printer) = external_printer { // External printer removed
-                                                    // Display reasoning with special formatting
-                                                    for line in reasoning.lines() {
-                                                        // Use cyan color and "🧠" prefix for thinking content
-                                                        // let _ = printer.send(format!("{}{}\n",
-                                                        //     console::style("🧠 ").cyan(),
-                                                        //     console::style(line).cyan()
-                                                        // ));
-                                                    }
-                                                // }
+                                                // Use the new thinking events for better UI
+                                                if !thinking_started {
+                                                    let _ = tx.send(AiResponse::AgentThinkingStart);
+                                                    thinking_started = true;
+                                                }
+                                                // Send thinking content chunk
+                                                let _ = tx.send(AiResponse::AgentThinkingContent(reasoning.clone()));
                                             }
                                             Some(ContentBlock::ToolCall {
                                                 id,
                                                 name,
                                                 arguments,
                                             }) => {
+                                                // End thinking mode if it was active
+                                                if thinking_started {
+                                                    let _ = tx.send(AiResponse::AgentThinkingEnd);
+                                                    thinking_started = false;
+                                                }
+                                                
                                                 // Track tool call
                                                 tool_calls_list.push((id.clone(), name.clone(), arguments.clone()));
 
@@ -806,11 +792,6 @@ For example:
                                                     name: name.clone(),
                                                     arguments: arguments.clone(),
                                                 });
-                                                // if let Some(ref printer) = external_printer { // External printer removed
-                                                    // Format tool call with icon and human-readable name
-                                                    let tool_display = format_tool_call(&name, &arguments);
-                                                    // let _ = printer.send(format!("{}\n", tool_display));
-                                                // }
                                             }
                                             Some(ContentBlock::ToolResult {
                                                 tool_call_id,
@@ -993,11 +974,17 @@ For example:
                                 msg.push_str(&text);
                             }
                         }
-                        AiResponse::AgentReasoningContent(reasoning) => {
-                            // Store reasoning content for conversation history
-                            // Could be accumulated, but for now we'll just track it
-                            // Note: Reasoning content is displayed directly via external printer
-                            // but we may want to store it for conversation history
+                        AiResponse::AgentThinkingStart => {
+                            // Thinking started - nothing to store yet
+                        }
+                        AiResponse::AgentThinkingContent(_thinking) => {
+                            // Thinking content - could store for conversation history
+                        }
+                        AiResponse::AgentThinkingEnd => {
+                            // Thinking ended - nothing to store
+                        }
+                        AiResponse::AgentReasoningContent(_reasoning) => {
+                            // Legacy reasoning content for conversation history
                         }
                         AiResponse::AgentToolCall {
                             id,
@@ -1992,7 +1979,6 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
             openrouter_models: Arc::new(Mutex::new(None)),
-            // external_printer: None, // External printer removed
             openai_models: Arc::new(Mutex::new(None)),
             anthropic_models: Arc::new(Mutex::new(None)),
             ollama_models: Arc::new(Mutex::new(None)),
@@ -2002,6 +1988,8 @@ mod tests {
             tracking_rx: Some(tracking_rx),
             tracking_tx: None,
             shared_conversation: Arc::new(Mutex::new(None)),
+            cached_tool_registry: None,
+            git_state_tracker: GitStateTracker::new("."),
         }
     }
 
@@ -2073,7 +2061,6 @@ mod tests {
             cancellation_token: CancellationToken::new(),
             current_task_handle: None,
             openrouter_models: Arc::new(Mutex::new(None)),
-            // external_printer: None, // External printer removed
             openai_models: Arc::new(Mutex::new(None)),
             anthropic_models: Arc::new(Mutex::new(None)),
             ollama_models: Arc::new(Mutex::new(None)),
@@ -2083,6 +2070,8 @@ mod tests {
             tracking_rx: Some(tracking_rx),
             tracking_tx: None,
             shared_conversation: Arc::new(Mutex::new(None)),
+            cached_tool_registry: None,
+            git_state_tracker: GitStateTracker::new("."),
         };
 
         assert_eq!(app.config.get_model(), "test-model");

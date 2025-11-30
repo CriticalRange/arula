@@ -13,8 +13,6 @@ pub mod exit_menu;
 pub mod dialogs;
 pub mod conversation_menu;
 
-// Re-export commonly used types for convenience
-pub use main_menu::MainMenu;
+// Re-export commonly used types for internal convenience
 pub use config_menu::ConfigMenu;
-pub use exit_menu::ExitMenu;
 pub use conversation_menu::ConversationMenu;
