@@ -715,6 +715,10 @@ You have access to various tools that you can use to help the user. When you nee
         // Log the AI interaction for debugging
         log_ai_interaction(message, &api_messages, None);
 
+        // Check if streaming is enabled in config
+        let streaming_enabled = self.config.get_streaming_enabled();
+        debug_print(&format!("DEBUG: Streaming mode: {}", if streaming_enabled { "enabled" } else { "disabled" }));
+
         // Send message using modern agent in background
         let msg = message.to_string();
         let cancel_token = self.cancellation_token.clone();
@@ -737,7 +741,16 @@ You have access to various tools that you can use to help the user. When you nee
                     // }
                 }
                 _result = async {
-                    match agent_client.query(&msg, Some(api_messages)).await {
+                    // Choose streaming or non-streaming based on config
+                    // query_streaming() uses true SSE streaming for real-time output
+                    // query_non_streaming() waits for complete response before displaying
+                    let query_result = if streaming_enabled {
+                        agent_client.query_streaming(&msg, Some(api_messages)).await
+                    } else {
+                        agent_client.query_non_streaming(&msg, Some(api_messages)).await
+                    };
+                    
+                    match query_result {
                         Ok(mut stream) => {
                             let _ = tx.send(AiResponse::AgentStreamStart);
 

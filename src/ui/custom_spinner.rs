@@ -10,7 +10,6 @@
 use crossterm::{
     cursor, execute,
     style::{Color, ResetColor, SetForegroundColor},
-    terminal::{Clear, ClearType},
 };
 use fastrand;
 use std::io::{self, Write};
@@ -288,13 +287,9 @@ fn run_star_spinner(
 
     // Clean up: clear the spinner line completely
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        ResetColor,
-        cursor::Show
-    )?;
+    // Use \r for better terminal compatibility
+    print!("\r\x1b[2K");
+    execute!(stdout, ResetColor, cursor::Show)?;
     stdout.flush()?;
     Ok(())
 }
@@ -321,12 +316,9 @@ fn draw_star(star: &str, label: &str, frame_count: u64) -> io::Result<()> {
     // Light gray for text
     let text_color = Color::Rgb { r: 205, g: 209, b: 196 };
 
-    execute!(
-        stdout,
-        cursor::SavePosition,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-    )?;
+    // Use \r for better terminal compatibility
+    execute!(stdout, cursor::SavePosition)?;
+    print!("\r\x1b[2K");
 
     // Draw: [star] label
     execute!(stdout, SetForegroundColor(pulsed_golden))?;
@@ -389,12 +381,9 @@ fn draw_star_with_transition(
     let pulsed_golden = Color::Rgb { r, g, b };
     let text_color = Color::Rgb { r: 205, g: 209, b: 196 };
 
-    execute!(
-        stdout,
-        cursor::SavePosition,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-    )?;
+    // Use \r for better terminal compatibility
+    execute!(stdout, cursor::SavePosition)?;
+    print!("\r\x1b[2K");
 
     // Draw: [star] label with transition effect
     execute!(stdout, SetForegroundColor(pulsed_golden))?;
@@ -456,12 +445,8 @@ fn draw_final(label: &str, final_msg: &str, is_err: bool) -> io::Result<()> {
 
     let text_color = Color::Rgb { r: 205, g: 209, b: 196 };
 
-    // Clear line and draw final message without saving position
-    execute!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-    )?;
+    // Clear line and draw final message - use \r for better terminal compatibility
+    print!("\r\x1b[2K");
 
     execute!(stdout, SetForegroundColor(status_color))?;
     print!("{} ", status_symbol);

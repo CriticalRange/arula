@@ -415,7 +415,7 @@ impl ResponseDisplay {
     
     /// Pulse animation for tool line with colored title and gray parameters
     fn pulse_tool_line_colored(&self, title: &str, params: &str, cycles: u32) -> io::Result<()> {
-        use crossterm::{cursor, execute, style::{Color, SetForegroundColor, ResetColor}};
+        use crossterm::{execute, style::{Color, SetForegroundColor, ResetColor}};
         
         let mut stdout = io::stdout();
         let full_text = format!("{} {}", title, params);
@@ -431,19 +431,17 @@ impl ResponseDisplay {
                 b: (intensity * 71.0) as u8,
             };
             
-            execute!(
-                stdout,
-                cursor::MoveToColumn(0),
-                SetForegroundColor(color),
-            )?;
-            print!("\x1b[K{}", full_text); // Clear line and print
+            // Use \r (carriage return) for better terminal compatibility
+            // \x1b[2K clears entire line, then we print from start
+            execute!(stdout, SetForegroundColor(color))?;
+            print!("\r\x1b[2K{}", full_text);
             stdout.flush()?;
             std::thread::sleep(Duration::from_millis(50));
         }
         
         // Final state: title in custom yellow (PRIMARY_ANSI), params in gray (MISC_ANSI)
-        execute!(stdout, cursor::MoveToColumn(0), ResetColor)?;
-        print!("\x1b[K");
+        execute!(stdout, ResetColor)?;
+        print!("\r\x1b[2K");
         print!("{}", style(title).color256(PRIMARY_ANSI).bold());
         println!(" {}", style(params).color256(MISC_ANSI));
         stdout.flush()?;

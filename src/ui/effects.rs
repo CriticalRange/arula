@@ -44,20 +44,16 @@ impl TerminalEffects {
                 b: intensity,
             };
 
-            execute!(
-                stdout,
-                cursor::MoveToColumn(0),
-                SetForegroundColor(color),
-                Clear(ClearType::CurrentLine),
-                Print(text)
-            )?;
-
+            // Use \r for better terminal compatibility
+            execute!(stdout, SetForegroundColor(color))?;
+            print!("\r\x1b[2K{}", text);
             stdout.flush()?;
             thread::sleep(Duration::from_millis(100));
         }
 
         // Clean up with normal color
-        execute!(stdout, ResetColor, Print(text))?;
+        execute!(stdout, ResetColor)?;
+        print!("\r\x1b[2K{}", text);
         stdout.flush()?;
         Ok(())
     }
@@ -140,11 +136,13 @@ impl TerminalEffects {
                 thread::sleep(Duration::from_millis(speed_ms));
             }
 
-            // Move to start for next cycle
-            execute!(stdout, cursor::MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            // Move to start for next cycle - use \r for terminal compatibility
+            print!("\r\x1b[2K");
+            stdout.flush()?;
         }
 
-        execute!(stdout, ResetColor, Print(text))?;
+        execute!(stdout, ResetColor)?;
+        print!("{}", text);
         stdout.flush()?;
         Ok(())
     }
@@ -166,14 +164,9 @@ impl TerminalEffects {
                 b: (intensity * 196.0) as u8,
             };
 
-            execute!(
-                stdout,
-                cursor::MoveToColumn(0),
-                Clear(ClearType::CurrentLine),
-                SetForegroundColor(color),
-                Print(text)
-            )?;
-
+            // Use \r for better terminal compatibility
+            execute!(stdout, SetForegroundColor(color))?;
+            print!("\r\x1b[2K{}", text);
             stdout.flush()?;
             thread::sleep(Duration::from_millis(delay_ms));
         }
@@ -228,19 +221,15 @@ impl TerminalEffects {
                 b: (intensity * 196.0) as u8,
             };
 
-            execute!(
-                stdout,
-                cursor::MoveToColumn(0),
-                Clear(ClearType::CurrentLine),
-                SetForegroundColor(color),
-                Print(text)
-            )?;
-
+            // Use \r for better terminal compatibility
+            execute!(stdout, SetForegroundColor(color))?;
+            print!("\r\x1b[2K{}", text);
             stdout.flush()?;
             thread::sleep(Duration::from_millis(80));
         }
 
-        execute!(stdout, ResetColor, Print(text))?;
+        execute!(stdout, ResetColor)?;
+        print!("\r\x1b[2K{}", text);
         stdout.flush()?;
         Ok(())
     }

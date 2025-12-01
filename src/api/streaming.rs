@@ -307,6 +307,14 @@ where
 }
 
 /// Build a streaming request body for OpenAI-compatible APIs
+/// 
+/// # Arguments
+/// * `model` - The model name
+/// * `messages` - The messages array
+/// * `tools` - Optional tools array
+/// * `temperature` - Temperature setting
+/// * `max_tokens` - Max tokens limit
+/// * `include_stream_options` - Whether to include stream_options (not supported by Z.AI)
 pub fn build_streaming_request(
     model: &str,
     messages: &[Value],
@@ -314,21 +322,59 @@ pub fn build_streaming_request(
     temperature: f32,
     max_tokens: u32,
 ) -> Value {
+    build_streaming_request_with_options(model, messages, tools, temperature, max_tokens, true)
+}
+
+/// Build a streaming request body with configurable options
+/// 
+/// Z.AI has specific requirements:
+/// - Does not support stream_options (pass include_stream_options: false)
+/// - Does not support tool_choice with streaming (pass include_tool_choice: false)
+/// - Requires tool_stream: true for streaming with tools (handled in api.rs)
+pub fn build_streaming_request_with_options(
+    model: &str,
+    messages: &[Value],
+    tools: Option<&[Value]>,
+    temperature: f32,
+    max_tokens: u32,
+    include_stream_options: bool,
+) -> Value {
+    build_streaming_request_full(model, messages, tools, temperature, max_tokens, include_stream_options, true)
+}
+
+/// Build a streaming request body with full control over all options
+pub fn build_streaming_request_full(
+    model: &str,
+    messages: &[Value],
+    tools: Option<&[Value]>,
+    temperature: f32,
+    max_tokens: u32,
+    include_stream_options: bool,
+    include_tool_choice: bool,
+) -> Value {
     let mut request = serde_json::json!({
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": true,
-        "stream_options": {
-            "include_usage": true
-        }
+        "stream": true
     });
+
+    // Only include stream_options for providers that support it (OpenAI, OpenRouter)
+    // Z.AI returns error 1210 (Invalid parameters) when stream_options is included
+    if include_stream_options {
+        request["stream_options"] = serde_json::json!({
+            "include_usage": true
+        });
+    }
 
     if let Some(tools) = tools {
         if !tools.is_empty() {
             request["tools"] = serde_json::json!(tools);
-            request["tool_choice"] = serde_json::json!("auto");
+            // Z.AI does NOT support tool_choice with streaming - only add for other providers
+            if include_tool_choice {
+                request["tool_choice"] = serde_json::json!("auto");
+            }
         }
     }
 

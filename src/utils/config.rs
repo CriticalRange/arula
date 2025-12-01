@@ -42,6 +42,12 @@ pub struct ProviderConfig {
     pub enable_usage_tracking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_search_enabled: Option<bool>,
+    
+    /// Enable streaming mode for API responses (default: true)
+    /// When enabled, responses are displayed as they arrive
+    /// When disabled, waits for complete response before displaying
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +245,7 @@ impl Config {
                 timeout_seconds: None,
                 enable_usage_tracking: None,
                 web_search_enabled: None,
+                streaming: None,
             };
 
             self.providers.insert(legacy.provider.clone(), provider_config);
@@ -272,6 +279,7 @@ impl Config {
                     timeout_seconds: Some(300),
                     enable_usage_tracking: Some(true),
                     web_search_enabled: Some(false),
+                    streaming: None,
                 },
             );
         }
@@ -321,6 +329,25 @@ impl Config {
     pub fn set_zai_web_search_enabled(&mut self, enabled: bool) -> Result<()> {
         if let Some(config) = self.get_active_provider_config_mut() {
             config.web_search_enabled = Some(enabled);
+        }
+        self.save_to_file(Self::get_config_path())?;
+        Ok(())
+    }
+
+    /// Get streaming mode setting for the active provider
+    /// Returns true by default if not explicitly set (streaming is the default)
+    pub fn get_streaming_enabled(&self) -> bool {
+        if let Some(config) = self.get_active_provider_config() {
+            config.streaming.unwrap_or(true)
+        } else {
+            true // Default to streaming enabled
+        }
+    }
+
+    /// Set streaming mode for the active provider
+    pub fn set_streaming_enabled(&mut self, enabled: bool) -> Result<()> {
+        if let Some(config) = self.get_active_provider_config_mut() {
+            config.streaming = Some(enabled);
         }
         self.save_to_file(Self::get_config_path())?;
         Ok(())
@@ -388,6 +415,9 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(false)),
+            streaming: std::env::var("ARULA_STREAMING")
+                .ok()
+                .and_then(|v| v.parse().ok()),
         });
 
         Ok(config)
@@ -499,6 +529,7 @@ impl Config {
                 timeout_seconds: None,
                 enable_usage_tracking: None,
                 web_search_enabled: None,
+                streaming: None,
             },
         );
         Ok(())
@@ -520,6 +551,7 @@ impl Config {
                 timeout_seconds: None,
                 enable_usage_tracking: None,
                 web_search_enabled: None,
+                streaming: None, // Defaults to true when not set
             },
         );
 
@@ -547,6 +579,7 @@ impl Config {
                 timeout_seconds: None,
                 enable_usage_tracking: None,
                 web_search_enabled: None,
+                streaming: None, // Defaults to true when not set
             },
         );
 
@@ -572,6 +605,7 @@ impl Config {
                 timeout_seconds: None,
                 enable_usage_tracking: None,
                 web_search_enabled: None,
+                streaming: None,
             },
         );
 

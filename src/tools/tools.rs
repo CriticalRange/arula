@@ -2,6 +2,7 @@
 
 use crate::api::agent::{Tool, ToolSchema, ToolSchemaBuilder};
 use async_trait::async_trait;
+use base64::Engine;
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command as TokioCommand;

@@ -1444,48 +1444,101 @@ impl ApiClient {
     where
         F: FnMut(crate::api::streaming::StreamEvent) + Send,
     {
-        use crate::api::streaming::{build_streaming_request, process_stream};
+        use crate::api::streaming::{build_streaming_request_full, process_stream};
+
+        let is_zai = matches!(self.provider, AIProvider::ZAiCoding);
 
         // Convert ChatMessage to JSON format
+        // Z.AI has strict requirements - only include role and content
         let json_messages: Vec<serde_json::Value> = messages
             .iter()
-            .map(|msg| {
+            .filter_map(|msg| {
+                // For Z.AI streaming, skip tool-related messages entirely
+                if is_zai {
+                    // Skip tool role messages for Z.AI streaming
+                    if msg.role == "tool" {
+                        return None;
+                    }
+                    // For assistant messages with only tool_calls (no content), skip
+                    if msg.role == "assistant" && msg.content.is_none() && msg.tool_calls.is_some() {
+                        return None;
+                    }
+                }
+                
                 let mut obj = serde_json::json!({
                     "role": msg.role,
                 });
                 
                 if let Some(content) = &msg.content {
                     obj["content"] = serde_json::json!(content);
+                } else if is_zai {
+                    // Z.AI requires content, use empty string if none
+                    obj["content"] = serde_json::json!("");
                 } else if msg.tool_calls.is_some() {
-                    // Assistant message with tool_calls can have null content
+                    // Assistant message with tool_calls can have null content (non-Z.AI)
                     obj["content"] = serde_json::json!(null);
                 }
                 
-                if let Some(tool_calls) = &msg.tool_calls {
-                    obj["tool_calls"] = serde_json::json!(tool_calls);
+                // Only include tool-related fields for non-Z.AI providers
+                if !is_zai {
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        obj["tool_calls"] = serde_json::json!(tool_calls);
+                    }
+                    
+                    if let Some(tool_call_id) = &msg.tool_call_id {
+                        obj["tool_call_id"] = serde_json::json!(tool_call_id);
+                    }
                 }
                 
-                if let Some(tool_call_id) = &msg.tool_call_id {
-                    obj["tool_call_id"] = serde_json::json!(tool_call_id);
-                }
-                
-                obj
+                Some(obj)
             })
             .collect();
 
         // Build streaming request
-        let tools_ref = if tools.is_empty() { None } else { Some(tools) };
-        let request_body = build_streaming_request(
+        // Z.AI has specific requirements (from docs.z.ai):
+        // - Does NOT support stream_options parameter (returns error 1210)
+        // - Does NOT support tool_choice with streaming
+        // - Requires tool_stream: true for function calls with streaming (GLM-4.6 only)
+        let include_stream_options = !is_zai;
+        let include_tool_choice = !is_zai; // Z.AI doesn't support tool_choice with streaming
+        
+        // For Z.AI, we need special handling for tools with streaming
+        let (tools_ref, use_tool_stream) = if is_zai && !tools.is_empty() {
+            // Z.AI requires tool_stream: true for streaming with tools
+            (Some(tools), true)
+        } else if !tools.is_empty() {
+            (Some(tools), false)
+        } else {
+            (None, false)
+        };
+        
+        let mut request_body = build_streaming_request_full(
             &self.model,
             &json_messages,
             tools_ref,
             0.7,
             2048,
+            include_stream_options,
+            include_tool_choice,
         );
+        
+        // Add tool_stream parameter for Z.AI when tools are present
+        // Note: tool_stream is ONLY supported by GLM-4.6
+        if use_tool_stream {
+            // Only add tool_stream if model supports it (GLM-4.6)
+            if self.model.contains("glm-4.6") || self.model.contains("glm-4-6") {
+                request_body["tool_stream"] = serde_json::json!(true);
+            } else {
+                // For non-GLM-4.6 models, remove tools from streaming request
+                // as they don't support tool_stream
+                request_body.as_object_mut().map(|obj| obj.remove("tools"));
+            }
+        }
 
         let request_url = format!("{}/chat/completions", self.endpoint);
         
         debug_print(&format!("DEBUG: Streaming request to {}", request_url));
+        debug_print(&format!("DEBUG: Z.AI streaming request body: {}", serde_json::to_string_pretty(&request_body).unwrap_or_default()));
         
         let mut request_builder = self
             .client
@@ -1598,6 +1651,34 @@ impl ApiClient {
         });
 
         Ok(rx)
+    }
+
+    /// Send message with custom tools (synchronous version - waits for complete response)
+    /// 
+    /// Unlike `send_message_with_tools`, this method directly returns the API response
+    /// instead of using a channel. Used for non-streaming mode.
+    pub async fn send_message_with_tools_sync(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+    ) -> Result<ApiResponse> {
+        let messages = messages.to_vec();
+        let tools = tools.to_vec();
+
+        match self.provider {
+            AIProvider::OpenAI | AIProvider::OpenRouter => {
+                self.send_openai_request_with_tools(messages, tools).await
+            }
+            AIProvider::ZAiCoding | AIProvider::Custom => {
+                self.send_zai_request_with_tools(messages, tools).await
+            }
+            AIProvider::Claude => {
+                self.send_claude_request(messages).await
+            }
+            AIProvider::Ollama => {
+                self.send_ollama_request(messages).await
+            }
+        }
     }
 
     /// Send OpenAI request with custom tools (also used for OpenRouter)

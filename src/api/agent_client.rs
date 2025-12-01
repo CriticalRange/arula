@@ -204,6 +204,185 @@ impl AgentClient {
         Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 
+    /// Send a message with non-streaming mode (waits for complete response)
+    ///
+    /// This method waits for the complete API response before returning it.
+    /// Useful for environments with limited terminal capabilities or when
+    /// a complete response is preferred over streaming updates.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The user's message
+    /// * `conversation_history` - Optional conversation history
+    ///
+    /// # Returns
+    ///
+    /// A stream of `ContentBlock` items (sent as batch when complete)
+    pub async fn query_non_streaming(
+        &self,
+        message: &str,
+        conversation_history: Option<Vec<ChatMessage>>,
+    ) -> Result<Pin<Box<dyn Stream<Item = ContentBlock> + Send>>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let api_client = self.api_client.clone();
+        let auto_execute_tools = self.options.auto_execute_tools;
+        let max_tool_iterations = self.options.max_tool_iterations;
+        let debug = self.options.debug;
+        let config_clone = self.config.clone();
+        let tx_clone = tx.clone();
+
+        // Get tools from registry
+        let tools = self.tool_registry.get_openai_tools();
+
+        // Build messages
+        let messages = self.build_api_messages(message, conversation_history)?;
+
+        tokio::spawn(async move {
+            // Create tool registry for execution
+            let mut execution_registry = create_basic_tool_registry();
+            if let Err(e) = initialize_mcp_tools(&mut execution_registry, &config_clone).await {
+                if debug {
+                    debug_print(&format!("⚠️ Failed to initialize MCP tools: {}", e));
+                }
+            }
+
+            if let Err(e) = Self::handle_non_streaming(
+                api_client,
+                messages,
+                tools,
+                tx,
+                auto_execute_tools,
+                max_tool_iterations,
+                debug,
+                &execution_registry,
+            )
+            .await
+            {
+                let _ = tx_clone.send(ContentBlock::error(format!("API error: {}", e)));
+            }
+        });
+
+        Ok(Box::pin(UnboundedReceiverStream::new(rx)))
+    }
+
+    /// Handle non-streaming API calls with tool execution loop
+    async fn handle_non_streaming(
+        api_client: ApiClient,
+        messages: Vec<ChatMessage>,
+        tools: Vec<serde_json::Value>,
+        tx: mpsc::UnboundedSender<ContentBlock>,
+        auto_execute_tools: bool,
+        max_tool_iterations: u32,
+        debug: bool,
+        tool_registry: &crate::api::agent::ToolRegistry,
+    ) -> Result<()> {
+        let mut current_messages = messages;
+        let mut iterations = 0;
+
+        loop {
+            if iterations >= max_tool_iterations {
+                debug_print("Max tool iterations reached, stopping");
+                break;
+            }
+
+            if debug {
+                debug_print(&format!("Non-streaming iteration {}", iterations + 1));
+            }
+
+            // Make non-streaming API call using send_message_with_tools_sync
+            let response = api_client
+                .send_message_with_tools_sync(&current_messages, &tools)
+                .await?;
+
+            // Send the complete text response
+            if !response.response.is_empty() {
+                let _ = tx.send(ContentBlock::Text { text: response.response.clone() });
+            }
+
+            // Check for tool calls
+            if let Some(ref calls) = response.tool_calls {
+                if !calls.is_empty() && auto_execute_tools {
+                    // Add assistant message with tool calls
+                    current_messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: if response.response.is_empty() { None } else { Some(response.response.clone()) },
+                        tool_calls: Some(calls.clone()),
+                        tool_call_id: None,
+                    });
+
+                    // Execute each tool call
+                    for tool_call in calls {
+                        // Send tool call notification
+                        let _ = tx.send(ContentBlock::tool_call(
+                            tool_call.id.clone(),
+                            tool_call.function.name.clone(),
+                            tool_call.function.arguments.clone(),
+                        ));
+
+                        // Parse arguments and execute
+                        let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(json!({}));
+
+                        let tool_result = tool_registry
+                            .execute_tool(&tool_call.function.name, args.clone())
+                            .await;
+
+                        let result_content = match tool_result {
+                            Some(result) => {
+                                // Send tool result
+                                let _ = tx.send(ContentBlock::tool_result(
+                                    tool_call.id.clone(),
+                                    result.clone(),
+                                ));
+                                
+                                // Format for message history
+                                if result.success {
+                                    result.data.to_string()
+                                } else {
+                                    format!("Error: {}", result.error.unwrap_or_default())
+                                }
+                            }
+                            None => {
+                                let error_msg = format!("Tool not found: {}", tool_call.function.name);
+                                let _ = tx.send(ContentBlock::tool_result(
+                                    tool_call.id.clone(),
+                                    crate::api::agent::ToolResult::error(error_msg.clone()),
+                                ));
+                                error_msg
+                            }
+                        };
+
+                        // Add tool result to messages
+                        current_messages.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content: Some(result_content),
+                            tool_calls: None,
+                            tool_call_id: Some(tool_call.id.clone()),
+                        });
+                    }
+
+                    // Continue the loop for another iteration
+                    iterations += 1;
+                    continue;
+                } else {
+                    // Tool calls present but auto-execute disabled
+                    for tool_call in calls {
+                        let _ = tx.send(ContentBlock::tool_call(
+                            tool_call.id.clone(),
+                            tool_call.function.name.clone(),
+                            tool_call.function.arguments.clone(),
+                        ));
+                    }
+                }
+            }
+
+            // No more tool calls, we're done
+            break;
+        }
+
+        Ok(())
+    }
+
     /// Handle true SSE streaming with tool execution loop
     async fn handle_true_streaming(
         api_client: ApiClient,
