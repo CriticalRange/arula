@@ -240,9 +240,26 @@ impl SessionManager {
             }
         }
 
-        // Check for directory listing entries
+        // Check for directory listing entries - show actual file list
         if let Some(entries) = data.get("entries").and_then(|e| e.as_array()) {
-            return format!("{} items found", entries.len());
+            let count = entries.len();
+            // Build a list of file names for display
+            let file_list: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| {
+                    let name = entry.get("name")?.as_str()?;
+                    let file_type = entry.get("file_type").and_then(|t| t.as_str()).unwrap_or("file");
+                    let icon = if file_type == "directory" { "📁" } else { "📄" };
+                    Some(format!("{} {}", icon, name))
+                })
+                .collect();
+            
+            if file_list.is_empty() {
+                return format!("{} items found", count);
+            } else {
+                // Return count header plus file list
+                return format!("{} items:\n{}", count, file_list.join("\n"));
+            }
         }
 
         // Check for file content

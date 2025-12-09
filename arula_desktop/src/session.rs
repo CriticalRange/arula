@@ -12,6 +12,8 @@ pub struct MessageEntry {
     parsed_timestamp: DateTime<Utc>,
     /// Tool call ID for tracking streaming bash output (only set for tool messages)
     pub tool_call_id: Option<String>,
+    /// Duration in seconds the AI spent thinking (only set for completed thinking messages)
+    pub thinking_duration_secs: Option<f32>,
 }
 
 impl MessageEntry {
@@ -28,6 +30,7 @@ impl MessageEntry {
             added_at: Instant::now(),
             parsed_timestamp,
             tool_call_id: None,
+            thinking_duration_secs: None,
         }
     }
 
@@ -44,6 +47,7 @@ impl MessageEntry {
             added_at: Instant::now(),
             parsed_timestamp,
             tool_call_id: None,
+            thinking_duration_secs: None,
         }
     }
 
@@ -80,6 +84,7 @@ impl MessageEntry {
             added_at: Instant::now(),
             parsed_timestamp,
             tool_call_id,
+            thinking_duration_secs: None,
         }
     }
 
@@ -96,6 +101,7 @@ impl MessageEntry {
             added_at: Instant::now(),
             parsed_timestamp,
             tool_call_id: None,
+            thinking_duration_secs: None,
         }
     }
 
@@ -138,8 +144,21 @@ impl Session {
         }
     }
 
+    /// Finalizes any pending thinking messages by calculating their duration.
+    /// Called when a new non-thinking message is about to be added.
+    fn finalize_thinking_messages(&mut self) {
+        for msg in self.messages.iter_mut() {
+            if msg.is_thinking() && msg.thinking_duration_secs.is_none() {
+                // Calculate duration from when thinking started (minimum 1 second)
+                let duration = msg.added_at.elapsed().as_secs_f32().max(1.0);
+                msg.thinking_duration_secs = Some(duration);
+            }
+        }
+    }
+
     /// Adds a user message to the session.
     pub fn add_user_message(&mut self, content: String, timestamp: String) {
+        self.finalize_thinking_messages();
         self.messages.push(MessageEntry::user(content, timestamp));
     }
 
@@ -157,14 +176,15 @@ impl Session {
         // Add content to the buffer
         self.ai_buffer.push_str(&content);
 
-        // Trim leading whitespace from start of buffer
-        let trimmed = self.ai_buffer.trim_start();
+        // Trim leading whitespace from start of buffer and check length
+        let trimmed = self.ai_buffer.trim_start().to_string();
 
         // Only create a message when we have substantial content (prevents "I" before tools)
         // 15 chars is enough to have a meaningful start like "I'll read the"
         if trimmed.len() >= 15 {
+            self.finalize_thinking_messages();
             self.messages
-                .push(MessageEntry::ai(trimmed.to_string(), timestamp));
+                .push(MessageEntry::ai(trimmed, timestamp));
             self.ai_buffer.clear();
         }
     }
@@ -197,6 +217,9 @@ impl Session {
     ) {
         // Discard any incomplete AI content in the buffer (prevents "I" before tools)
         self.ai_buffer.clear();
+
+        // Finalize any pending thinking messages
+        self.finalize_thinking_messages();
 
         // Always create a new tool message bubble for each tool interaction
         self.messages
@@ -245,12 +268,12 @@ impl Session {
             .map(|msg| {
                 if msg.is_tool() {
                     // Tool messages contain the result of tool execution
-                    // Format: "icon DisplayName status result_summary"
+                    // Pass through tool_call_id for provider correlation
                     arula_core::api::api::ChatMessage {
                         role: "tool".to_string(),
                         content: Some(msg.content.clone()),
                         tool_calls: None,
-                        tool_call_id: None,
+                        tool_call_id: msg.tool_call_id.clone(), // Pass through the ID
                         tool_name: Some("tool_result".to_string()), // Generic name for Ollama compatibility
                     }
                 } else {

@@ -320,9 +320,15 @@ impl ApiClient {
                     .header("x-api-key", &self.api_key)
                     .header("anthropic-version", "2023-06-01");
             }
-            AIProvider::OpenAI | AIProvider::ZAiCoding | AIProvider::OpenRouter => {
+            AIProvider::OpenAI | AIProvider::OpenRouter => {
                 request_builder =
                     request_builder.header("Authorization", format!("Bearer {}", self.api_key));
+            }
+            AIProvider::ZAiCoding => {
+                // Add Accept-Language header to encourage English responses from Chinese models
+                request_builder = request_builder
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("Accept-Language", "en-US,en");
             }
             // Ollama usually doesn't need auth, but Custom might
             AIProvider::Custom => {
@@ -1786,7 +1792,7 @@ impl ApiClient {
                     }
                 }
             ]);
-            req["tool_choice"] = json!("auto"); // Z.AI does not support "required"
+            req["tool_choice"] = json!("auto");
             req
         };
 
@@ -1801,11 +1807,13 @@ impl ApiClient {
         // Send the request
         let mut request_builder = self.client.post(final_endpoint).json(&request);
 
-        // Add authorization header if API key is provided
+        // Add authorization and language headers
         if !self.api_key.is_empty() {
             request_builder =
                 request_builder.header("Authorization", format!("Bearer {}", self.api_key));
         }
+        // Add Accept-Language header to encourage English responses from Chinese models
+        request_builder = request_builder.header("Accept-Language", "en-US,en");
 
         let response = request_builder.send().await?;
         let status = response.status();

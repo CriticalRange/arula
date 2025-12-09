@@ -549,16 +549,19 @@ You have access to tools for file operations, shell commands, and more. Use them
         }
 
         // Convert chat messages to API format for agent
+        // IMPORTANT: Include tool results so AI knows what tools were already used!
         let api_messages: Vec<crate::api::api::ChatMessage> = self
             .messages
             .iter()
             .filter(|m| {
-                m.message_type != MessageType::ToolCall && m.message_type != MessageType::ToolResult
+                // Skip ToolCall messages (these are UI-only) but keep ToolResult
+                m.message_type != MessageType::ToolCall
             })
             .map(|m| {
                 let role = match m.message_type {
                     MessageType::User => "user".to_string(),
                     MessageType::Arula => "assistant".to_string(),
+                    MessageType::ToolResult => "assistant".to_string(), // Tool results go as assistant context
                     _ => "system".to_string(),
                 };
                 crate::api::api::ChatMessage {

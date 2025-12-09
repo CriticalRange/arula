@@ -8,6 +8,7 @@ use arula_desktop::styles::{
     cog_button_container_style_button, input_style, primary_button_style, send_button_style,
     transparent_style, user_bubble_style,
 };
+use arula_desktop::animation::Spring;
 use arula_desktop::{
     app_theme, collect_provider_options, palette, ConfigForm, Dispatcher, LiquidMenuState,
     LivingBackgroundState, MessageEntry, PaletteColors, Session, SettingsMenuState, SettingsPage,
@@ -56,10 +57,13 @@ struct App {
     markdown_cache: HashMap<String, Vec<markdown::Item>>,
     /// Track tool display args from ToolCallStart to show in ToolCallResult (keyed by session_id)
     tool_args_cache: HashMap<uuid::Uuid, String>,
-    /// Track collapsed state for tool messages (keyed by "session_index:message_index")
-    collapsed_tools: HashMap<String, bool>,
+    /// Track expand/collapse animation state for tool messages (keyed by "session_index:message_index")
+    /// Spring position: 0.0 = collapsed, 1.0 = expanded
+    tool_animations: HashMap<String, Spring>,
     /// Current stream error to display to the user
     stream_error: Option<String>,
+    /// Whether the error toast is expanded to show full error
+    error_expanded: bool,
     /// Streaming bash output lines per tool call (keyed by tool_call_id)
     bash_output_lines: HashMap<String, Vec<(String, bool)>>, // (line, is_stderr)
 }
@@ -108,6 +112,10 @@ enum Message {
     ToggleToolCollapse(String),
     /// Dismiss the error notification
     DismissError,
+    /// Toggle error toast expand/collapse
+    ToggleErrorExpand,
+    /// Copy message content to clipboard
+    CopyToClipboard(String),
 }
 
 /// Input field ID for focus management
@@ -213,8 +221,9 @@ impl App {
             models_loading: false,
             markdown_cache: HashMap::new(),
             tool_args_cache: HashMap::new(),
-            collapsed_tools: HashMap::new(),
+            tool_animations: HashMap::new(),
             stream_error: None,
+            error_expanded: false,
             bash_output_lines: HashMap::new(),
         })
     }
@@ -240,8 +249,9 @@ impl App {
             models_loading: false,
             markdown_cache: HashMap::new(),
             tool_args_cache: HashMap::new(),
-            collapsed_tools: HashMap::new(),
+            tool_animations: HashMap::new(),
             stream_error: None,
+            error_expanded: false,
             bash_output_lines: HashMap::new(),
         }
     }
@@ -298,8 +308,10 @@ impl App {
                         session.set_streaming(false);
                     }
                 }
+                // Re-focus input after sending
+                return text_input::focus(input_id());
             }
-            Message::Received(ev) => self.handle_ui_event(ev),
+            Message::Received(ev) => return self.handle_ui_event(ev),
             Message::NewTab => {
                 self.sessions.push(Session::new());
                 self.current = self.sessions.len() - 1;
@@ -371,6 +383,11 @@ impl App {
                     for card in &mut self.tilt_cards {
                         card.clear_cache();
                     }
+                }
+                
+                // Update tool expand/collapse animations
+                for spring in self.tool_animations.values_mut() {
+                    spring.update();
                 }
             }
             Message::ConfigProviderChanged(provider) => {
@@ -494,12 +511,46 @@ impl App {
                 }
             }
             Message::ToggleToolCollapse(key) => {
-                // Toggle the collapsed state for this tool message
-                let is_collapsed = self.collapsed_tools.get(&key).copied().unwrap_or(false);
-                self.collapsed_tools.insert(key, !is_collapsed);
+                // Get or create animation spring for this tool
+                // Important: we need to know the DEFAULT state to create the spring correctly
+                // Thinking bubbles (finalized) default to collapsed, tools default to expanded
+                let is_thinking = key.contains(":") && self.sessions.iter().enumerate().any(|(sidx, session)| {
+                    session.messages.iter().enumerate().any(|(midx, msg)| {
+                        let msg_key = format!("{}:{}", sidx, midx);
+                        msg_key == key && msg.is_thinking() && msg.thinking_duration_secs.is_some()
+                    })
+                });
+                
+                let spring = self.tool_animations.entry(key).or_insert_with(|| {
+                    let mut s = Spring::default();
+                    if is_thinking {
+                        // Finalized thinking defaults to collapsed
+                        s.position = 0.0;
+                        s.target = 0.0;
+                    } else {
+                        // Tools default to expanded
+                        s.position = 1.0;
+                        s.target = 1.0;
+                    }
+                    s
+                });
+                
+                // Toggle the target: 0.0 = collapsed, 1.0 = expanded
+                let new_target = if spring.target > 0.5 { 0.0 } else { 1.0 };
+                spring.set_target(new_target);
             }
             Message::DismissError => {
                 self.stream_error = None;
+                self.error_expanded = false;
+            }
+            Message::ToggleErrorExpand => {
+                self.error_expanded = !self.error_expanded;
+            }
+            Message::CopyToClipboard(text) => {
+                // Copy text to clipboard using arboard
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(text);
+                }
             }
         }
         Task::none()
@@ -520,7 +571,7 @@ impl App {
         }
     }
 
-    fn handle_ui_event(&mut self, ev: UiEvent) {
+    fn handle_ui_event(&mut self, ev: UiEvent) -> Task<Message> {
         match ev {
             UiEvent::StreamStarted(id) => {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
@@ -566,6 +617,8 @@ impl App {
                     if is_final {
                         session.flush_ai_buffer(Utc::now().to_rfc3339());
                         session.set_streaming(false);
+                        // Re-focus input when streaming completes
+                        return text_input::focus(input_id());
                     }
                 }
             }
@@ -575,6 +628,8 @@ impl App {
                     s.flush_ai_buffer(Utc::now().to_rfc3339());
                     s.set_streaming(false);
                 }
+                // Re-focus input when stream finishes
+                return text_input::focus(input_id());
             }
             UiEvent::StreamErrored(id, err) => {
                 eprintln!("stream error {id}: {err}");
@@ -583,6 +638,8 @@ impl App {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
                     s.set_streaming(false);
                 }
+                // Re-focus input on error
+                return text_input::focus(input_id());
             }
             UiEvent::Thinking(id, text) => {
                 // Create a thinking/reasoning bubble to show the AI's thought process
@@ -673,6 +730,7 @@ impl App {
                     .push((line, is_stderr));
             }
         }
+        Task::none()
     }
 
     fn apply_config_changes(&mut self) {
@@ -767,57 +825,111 @@ impl App {
 
         // Error notification overlay
         let error_overlay: Element<'_, Message> = if let Some(ref error) = self.stream_error {
-            // Extract a user-friendly error message
-            let display_error = if error.contains("502 Bad Gateway") {
+            // Extract a user-friendly error message for collapsed view
+            let short_error = if error.contains("502 Bad Gateway") {
                 "Server temporarily unavailable. Please try again.".to_string()
             } else if error.contains("500") {
                 "Server error occurred. Please try again later.".to_string()
             } else if error.contains("timeout") || error.contains("Timeout") {
                 "Request timed out. Please check your connection.".to_string()
-            } else if error.len() > 100 {
-                format!("{}...", &error[..100])
+            } else if error.len() > 60 && !self.error_expanded {
+                format!("{}...", &error[..60])
             } else {
                 error.clone()
             };
 
-            let error_container = container(
-                row![
-                    text("⚠")
-                        .size(18)
-                        .style(move |_| iced::widget::text::Style {
-                            color: Some(Color {
-                                r: 1.0,
-                                g: 0.8,
-                                b: 0.2,
-                                a: 1.0
-                            })
-                        }),
-                    Space::with_width(Length::Fixed(10.0)),
-                    text(display_error)
-                        .size(13)
+            let chevron = if self.error_expanded {
+                Bootstrap::ChevronDown
+            } else {
+                Bootstrap::ChevronRight
+            };
+
+            // Header row (always visible, clickable to expand)
+            let header_row = row![
+                text(Bootstrap::ExclamationTriangleFill.to_string())
+                    .size(18)
+                    .font(iced_fonts::BOOTSTRAP_FONT)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(Color {
+                            r: 1.0,
+                            g: 0.8,
+                            b: 0.2,
+                            a: 1.0
+                        })
+                    }),
+                Space::with_width(Length::Fixed(8.0)),
+                text(chevron.to_string())
+                    .size(12)
+                    .font(iced_fonts::BOOTSTRAP_FONT)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(Color { a: 0.7, ..pal.text })
+                    }),
+                Space::with_width(Length::Fixed(8.0)),
+                text(if self.error_expanded { "Error Details".to_string() } else { short_error })
+                    .size(13)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(pal.text)
+                    }),
+                Space::with_width(Length::Fill),
+                button(
+                    text(Bootstrap::XLg.to_string())
+                        .size(14)
+                        .font(iced_fonts::BOOTSTRAP_FONT)
                         .style(move |_| iced::widget::text::Style {
                             color: Some(pal.text)
-                        }),
-                    Space::with_width(Length::Fill),
-                    button(
-                        text("✕")
-                            .size(14)
+                        })
+                )
+                .on_press(Message::DismissError)
+                .padding([4, 8])
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    border: Border::default(),
+                    text_color: pal.text,
+                    ..Default::default()
+                }),
+            ]
+            .align_y(iced::Alignment::Center);
+
+            // Make header clickable
+            let header_button = button(header_row)
+                .on_press(Message::ToggleErrorExpand)
+                .padding([12, 16])
+                .width(Length::Fill)
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    border: Border::default(),
+                    text_color: pal.text,
+                    ..Default::default()
+                });
+
+            // Expanded content (full error details)
+            let expanded_content: Element<'_, Message> = if self.error_expanded {
+                container(
+                    scrollable(
+                        text(error.as_str())
+                            .size(12)
+                            .font(Font::MONOSPACE)
                             .style(move |_| iced::widget::text::Style {
-                                color: Some(pal.text)
+                                color: Some(Color {
+                                    r: 1.0,
+                                    g: 0.7,
+                                    b: 0.7,
+                                    a: 1.0
+                                })
                             })
                     )
-                    .on_press(Message::DismissError)
-                    .padding([4, 8])
-                    .style(move |_theme, _status| button::Style {
-                        background: Some(Background::Color(Color::TRANSPARENT)),
-                        border: Border::default(),
-                        text_color: pal.text,
-                        ..Default::default()
-                    }),
-                ]
-                .align_y(iced::Alignment::Center),
+                    .height(Length::Fixed(120.0))
+                )
+                .padding([6, 16])
+                .width(Length::Fill)
+                .into()
+            } else {
+                Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            };
+
+            let error_container = container(
+                column![header_button, expanded_content].spacing(0),
             )
-            .padding([12, 16])
             .max_width(600.0)
             .style(move |_| container::Style {
                 background: Some(Background::Color(Color {
@@ -1189,7 +1301,33 @@ impl App {
                     }), // Also fade timestamp
                 });
 
-        let bubble = container(column![content_widget, timestamp].spacing(6))
+        // Copy button for the message content
+        let content_to_copy = message.content.clone();
+        let copy_button = button(
+            text(Bootstrap::Clipboard.to_string())
+                .size(12)
+                .font(iced_fonts::BOOTSTRAP_FONT)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(Color { a: fade_opacity * 0.6, ..pal.muted })
+                })
+        )
+        .on_press(Message::CopyToClipboard(content_to_copy))
+        .padding([2, 4])
+        .style(move |_theme, status| {
+            let hover_opacity = if matches!(status, button::Status::Hovered) { 1.0 } else { 0.6 };
+            button::Style {
+                background: Some(Background::Color(Color::TRANSPARENT)),
+                border: Border::default(),
+                text_color: Color { a: fade_opacity * hover_opacity, ..pal.muted },
+                ..Default::default()
+            }
+        });
+
+        // Bottom row with timestamp and copy button
+        let bottom_row = row![timestamp, Space::with_width(Length::Fill), copy_button]
+            .align_y(iced::Alignment::Center);
+
+        let bubble = container(column![content_widget, bottom_row].spacing(6))
             .padding(16)
             .max_width(MESSAGE_MAX_WIDTH);
 
@@ -1225,34 +1363,8 @@ impl App {
             // Terminal-style tool bubble with collapsible content
             return self.terminal_style_tool_bubble(msg_idx, message, &key, pal, fade_opacity);
         } else if is_thinking {
-            // Thinking bubble - distinct style with purple/blue tint
-            let base_style_fn = move |_theme: &iced::Theme| container::Style {
-                background: Some(Background::Color(Color {
-                    r: 0.1,
-                    g: 0.1,
-                    b: 0.2,
-                    a: 0.3,
-                })),
-                border: Border {
-                    radius: 12.0.into(),
-                    width: 1.0,
-                    color: Color {
-                        r: 0.4,
-                        g: 0.4,
-                        b: 0.8,
-                        a: 0.3,
-                    },
-                },
-                text_color: Some(Color {
-                    r: 0.7,
-                    g: 0.7,
-                    b: 0.9,
-                    a: 1.0,
-                }),
-                ..Default::default()
-            };
-            let styled_bubble = bubble.style(move |t| dynamic_style(base_style_fn(t)));
-            row![styled_bubble, Space::with_width(Length::Fill)].into()
+            // Thinking bubble - collapsible when finalized with "Thought for X seconds"
+            return self.thinking_style_bubble(msg_idx, message, &key, pal, fade_opacity);
         } else {
             let base_style_fn = ai_bubble_style(pal, false); // Pass false since we handle opacity manually here
             let styled_bubble = bubble.style(move |t| dynamic_style(base_style_fn(t)));
@@ -1269,7 +1381,10 @@ impl App {
         pal: PaletteColors,
         fade_opacity: f32,
     ) -> Element<'a, Message> {
-        let is_collapsed = self.collapsed_tools.get(key).copied().unwrap_or(false);
+        // Get animation state: default to expanded (position=1.0)
+        let spring = self.tool_animations.get(key);
+        let expand_progress = spring.map(|s| s.position).unwrap_or(1.0);
+        let is_collapsed = spring.map(|s| s.target < 0.5).unwrap_or(false);
         let key_owned = key.to_string();
 
         // Parse tool content - format varies:
@@ -1278,16 +1393,128 @@ impl App {
         // Other tools: "○ Read • path: \"file.txt\" ✓ 732 chars"
         let content = &message.content;
 
-        // Extract tool name and determine if it's a shell command
-        let is_shell = content.contains("Shell") || content.contains("execute_bash");
+        // Detect tool type from content
+        #[derive(Clone, Copy, PartialEq)]
+        enum ToolType {
+            Shell,
+            ReadFile,
+            WriteFile,
+            EditFile,
+            ListDirectory,
+            Search,
+            WebSearch,
+            Mcp,
+            Vision,
+            Other,
+        }
+
+        let tool_type = if content.contains("Shell") || content.contains("execute_bash") {
+            ToolType::Shell
+        } else if content.contains("Edit") || content.contains("edit_file") {
+            ToolType::EditFile
+        } else if content.contains("Write") || content.contains("write_file") {
+            ToolType::WriteFile
+        } else if content.contains("Read") || content.contains("read_file") {
+            ToolType::ReadFile
+        } else if content.contains("List") || content.contains("list_directory") {
+            ToolType::ListDirectory
+        } else if content.contains("Search") && !content.contains("Web") {
+            ToolType::Search
+        } else if content.contains("Web") || content.contains("web_search") {
+            ToolType::WebSearch
+        } else if content.contains("MCP") || content.contains("mcp_call") {
+            ToolType::Mcp
+        } else if content.contains("Vision") || content.contains("visioneer") {
+            ToolType::Vision
+        } else {
+            ToolType::Other
+        };
+
+        let is_shell = tool_type == ToolType::Shell;
+        let is_edit = tool_type == ToolType::EditFile;
+        let is_read = tool_type == ToolType::ReadFile;
+        let _is_list = tool_type == ToolType::ListDirectory;
 
         // Check if operation completed (has ✓ or ✗)
         let has_checkmark = content.contains('✓');
         let has_error = content.contains('✗');
 
+        // Tool-specific theming: (accent_color, header_bg, content_bg, icon, label)
+        let (bubble_accent_color, header_bg_color, terminal_bg_color, tool_icon, header_label) = match tool_type {
+            ToolType::Shell => (
+                Color { r: 0.6, g: 0.5, b: 0.9, a: fade_opacity }, // Purple
+                Color { r: 0.12, g: 0.10, b: 0.18, a: fade_opacity * 0.98 },
+                Color { r: 0.06, g: 0.05, b: 0.10, a: fade_opacity * 0.98 },
+                Bootstrap::Terminal,
+                "Terminal",
+            ),
+            ToolType::ReadFile => (
+                Color { r: 0.4, g: 0.7, b: 1.0, a: fade_opacity }, // Blue
+                Color { r: 0.08, g: 0.12, b: 0.18, a: fade_opacity * 0.98 },
+                Color { r: 0.04, g: 0.08, b: 0.12, a: fade_opacity * 0.98 },
+                Bootstrap::FileEarmarkText,
+                "Read File",
+            ),
+            ToolType::WriteFile => (
+                Color { r: 0.4, g: 0.9, b: 0.5, a: fade_opacity }, // Green
+                Color { r: 0.08, g: 0.15, b: 0.10, a: fade_opacity * 0.98 },
+                Color { r: 0.04, g: 0.10, b: 0.06, a: fade_opacity * 0.98 },
+                Bootstrap::FileEarmarkPlus,
+                "Write File",
+            ),
+            ToolType::EditFile => (
+                Color { r: 1.0, g: 0.7, b: 0.3, a: fade_opacity }, // Orange
+                Color { r: 0.18, g: 0.12, b: 0.06, a: fade_opacity * 0.98 },
+                Color { r: 0.12, g: 0.08, b: 0.04, a: fade_opacity * 0.98 },
+                Bootstrap::FileEarmarkDiff,
+                "Edit File",
+            ),
+            ToolType::ListDirectory => (
+                Color { r: 0.3, g: 0.8, b: 0.8, a: fade_opacity }, // Teal
+                Color { r: 0.06, g: 0.14, b: 0.14, a: fade_opacity * 0.98 },
+                Color { r: 0.04, g: 0.10, b: 0.10, a: fade_opacity * 0.98 },
+                Bootstrap::FolderFill,
+                "List Directory",
+            ),
+            ToolType::Search => (
+                Color { r: 0.5, g: 0.8, b: 1.0, a: fade_opacity }, // Cyan
+                Color { r: 0.08, g: 0.12, b: 0.16, a: fade_opacity * 0.98 },
+                Color { r: 0.04, g: 0.08, b: 0.12, a: fade_opacity * 0.98 },
+                Bootstrap::Search,
+                "Search",
+            ),
+            ToolType::WebSearch => (
+                Color { r: 0.4, g: 0.6, b: 1.0, a: fade_opacity }, // Deep Blue
+                Color { r: 0.06, g: 0.08, b: 0.16, a: fade_opacity * 0.98 },
+                Color { r: 0.04, g: 0.06, b: 0.12, a: fade_opacity * 0.98 },
+                Bootstrap::Globe,
+                "Web Search",
+            ),
+            ToolType::Mcp => (
+                Color { r: 0.8, g: 0.5, b: 0.9, a: fade_opacity }, // Magenta
+                Color { r: 0.14, g: 0.08, b: 0.16, a: fade_opacity * 0.98 },
+                Color { r: 0.10, g: 0.05, b: 0.12, a: fade_opacity * 0.98 },
+                Bootstrap::PlugFill,
+                "MCP Tool",
+            ),
+            ToolType::Vision => (
+                Color { r: 0.9, g: 0.6, b: 0.8, a: fade_opacity }, // Pink
+                Color { r: 0.16, g: 0.10, b: 0.14, a: fade_opacity * 0.98 },
+                Color { r: 0.12, g: 0.06, b: 0.10, a: fade_opacity * 0.98 },
+                Bootstrap::EyeFill,
+                "Vision",
+            ),
+            ToolType::Other => (
+                Color { r: 0.6, g: 0.6, b: 0.6, a: fade_opacity }, // Gray
+                Color { r: 0.12, g: 0.12, b: 0.12, a: fade_opacity * 0.98 },
+                Color { r: 0.08, g: 0.08, b: 0.08, a: fade_opacity * 0.98 },
+                Bootstrap::GearFill,
+                "Tool",
+            ),
+        };
+
         // Extract command/argument - improved parsing
         let command_display = {
-            // Find the tool name part (between ○ and • or status icon)
             let tool_names = [
                 "Shell", "Read", "Write", "Edit", "List", "Search", "Web", "MCP", "Vision",
             ];
@@ -1300,17 +1527,16 @@ impl App {
                 }
             }
 
-            // Clean up: remove leading space, •, and "command:" or similar prefixes
             let cleaned = after_tool
                 .trim_start()
                 .trim_start_matches('•')
                 .trim_start()
                 .trim_start_matches("command:")
                 .trim_start_matches("path:")
+                .trim_start_matches("query:")
                 .trim_start()
                 .trim_matches('"');
 
-            // Get everything before ✓ or ✗
             let before_status = cleaned
                 .split('✓')
                 .next()
@@ -1320,7 +1546,9 @@ impl App {
                 .trim_end_matches('"');
 
             if before_status.is_empty() {
-                "command".to_string()
+                "...".to_string()
+            } else if before_status.len() > 50 {
+                format!("{}...", &before_status[..47])
             } else {
                 before_status.to_string()
             }
@@ -1335,108 +1563,149 @@ impl App {
             None
         };
 
-        // Status icon
+        // Status icon using Bootstrap icons
         let status_icon = if has_checkmark {
-            "✓"
+            Bootstrap::CheckLg
         } else if has_error {
-            "✗"
+            Bootstrap::XLg
         } else {
-            "○"
+            Bootstrap::Circle
         };
 
-        // Fixed purple color scheme - no status-based changes
-        let bubble_accent_color = Color {
-            r: 0.6,
-            g: 0.5,
-            b: 0.9,
-            a: fade_opacity,
-        };
-        let header_bg_color = Color {
-            r: 0.12,
-            g: 0.10,
-            b: 0.18,
-            a: fade_opacity * 0.98,
-        };
-        let terminal_bg_color = Color {
-            r: 0.06,
-            g: 0.05,
-            b: 0.10,
-            a: fade_opacity * 0.98,
-        };
-
-        // Dropdown chevron - use common Unicode arrows
-        let chevron_char = if is_collapsed { "►" } else { "▼" };
-
-        let header_label = if is_shell {
-            "Terminal Output"
+        let status_color = if has_checkmark {
+            Color { r: 0.4, g: 1.0, b: 0.5, a: fade_opacity }
+        } else if has_error {
+            Color { r: 1.0, g: 0.4, b: 0.4, a: fade_opacity }
         } else {
-            "Tool Output"
+            bubble_accent_color
         };
 
-        let header = button(
-            row![
-                text(chevron_char)
-                    .size(14)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(Color {
-                            a: fade_opacity,
-                            ..pal.text
-                        })
-                    }),
-                Space::with_width(Length::Fixed(8.0)),
-                text(header_label)
-                    .size(13)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(Color {
-                            a: fade_opacity,
-                            ..pal.text
-                        })
-                    }),
-                Space::with_width(Length::Fill),
-                text(status_icon)
-                    .size(14)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(bubble_accent_color)
-                    }),
-            ]
-            .align_y(iced::Alignment::Center)
-            .width(Length::Fill),
-        )
-        .on_press(Message::ToggleToolCollapse(key_owned))
-        .padding([8, 12])
-        .style(move |_theme, _status| button::Style {
-            background: Some(Background::Color(header_bg_color)),
-            border: Border {
-                radius: if is_collapsed { 8.0.into() } else { 8.0.into() },
-                width: 1.0,
-                color: Color {
-                    a: bubble_accent_color.a * 0.6,
-                    ..bubble_accent_color
-                },
-            },
-            text_color: pal.text,
-            ..Default::default()
-        });
+        // Dropdown chevron using Bootstrap
+        let chevron_icon = if is_collapsed {
+            Bootstrap::ChevronRight
+        } else {
+            Bootstrap::ChevronDown
+        };
 
-        // Terminal content area (only shown when not collapsed)
-        let terminal_content: Element<'_, Message> = if is_collapsed {
+        // For read file, include the result summary in the header display
+        let header_detail = if is_read {
+            // Show full info: "filename • X chars"
+            if let Some(ref result) = result_text {
+                format!("{} • {}", command_display, result)
+            } else {
+                command_display.clone()
+            }
+        } else {
+            command_display.clone()
+        };
+
+        // Build header row - chevron goes on the RIGHT side (after status icon)
+        // ReadFile doesn't get a chevron since it's not expandable
+        let mut header_row = row![
+            text(tool_icon.to_string())
+                .size(14)
+                .font(iced_fonts::BOOTSTRAP_FONT)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(bubble_accent_color)
+                }),
+            Space::with_width(Length::Fixed(6.0)),
+            text(header_label)
+                .size(13)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(bubble_accent_color)
+                }),
+            Space::with_width(Length::Fixed(8.0)),
+            text(header_detail)
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                }),
+            Space::with_width(Length::Fill),
+            text(status_icon.to_string())
+                .size(14)
+                .font(iced_fonts::BOOTSTRAP_FONT)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(status_color)
+                }),
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        // Add chevron on right side for expandable tools (not read file)
+        if !is_read {
+            header_row = header_row.push(Space::with_width(Length::Fixed(8.0)));
+            header_row = header_row.push(
+                text(chevron_icon.to_string())
+                    .size(12)
+                    .font(iced_fonts::BOOTSTRAP_FONT)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                    }),
+            );
+        }
+
+        // Header button - only clickable for non-read tools
+        let header = if is_read {
+            // Read file: non-expandable, just a container with full rounded corners
+            button(header_row)
+                .padding([8, 12])
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(header_bg_color)),
+                    border: Border {
+                        radius: 8.0.into(),
+                        width: 1.0,
+                        color: Color {
+                            a: bubble_accent_color.a * 0.5,
+                            ..bubble_accent_color
+                        },
+                    },
+                    text_color: pal.text,
+                    ..Default::default()
+                })
+        } else {
+            // Other tools: expandable with toggle
+            button(header_row)
+                .on_press(Message::ToggleToolCollapse(key_owned))
+                .padding([8, 12])
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(header_bg_color)),
+                    border: Border {
+                        radius: if is_collapsed { 8.0.into() } else { iced::border::Radius::new(0.0).top(8.0) },
+                        width: 1.0,
+                        color: Color {
+                            a: bubble_accent_color.a * 0.5,
+                            ..bubble_accent_color
+                        },
+                    },
+                    text_color: pal.text,
+                    ..Default::default()
+                })
+        };
+
+        // Terminal content area (only shown when not collapsed, and never for read file)
+        // Uses expand_progress for smooth animation (0.0 = collapsed, 1.0 = expanded)
+        let terminal_content: Element<'_, Message> = if is_read || expand_progress < 0.01 {
             Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
         } else {
             // Black terminal background with command prompt
             let prompt_prefix = if is_shell { "$ " } else { "> " };
+
+            // Calculate content opacity for animation (fade in/out with expand)
+            let content_opacity = fade_opacity * expand_progress;
 
             // Terminal text colors - neutral prompt, white command
             let prompt_color = Color {
                 r: 0.6,
                 g: 0.6,
                 b: 0.65,
-                a: fade_opacity,
+                a: content_opacity,
             }; // Light gray prompt
             let command_color = Color {
                 r: 0.9,
                 g: 0.9,
                 b: 0.9,
-                a: fade_opacity,
+                a: content_opacity,
             }; // White command
 
             // Result color with glow effect
@@ -1445,21 +1714,21 @@ impl App {
                     r: 0.4,
                     g: 1.0,
                     b: 0.5,
-                    a: fade_opacity,
+                    a: content_opacity,
                 } // Bright green glow
             } else if has_error {
                 Color {
                     r: 1.0,
                     g: 0.4,
                     b: 0.4,
-                    a: fade_opacity,
+                    a: content_opacity,
                 } // Bright red glow
             } else {
                 Color {
                     r: 0.7,
                     g: 0.7,
                     b: 0.7,
-                    a: fade_opacity,
+                    a: content_opacity,
                 } // Gray
             };
 
@@ -1496,7 +1765,7 @@ impl App {
                             r: 1.0,
                             g: 0.6,
                             b: 0.4,
-                            a: fade_opacity,
+                            a: content_opacity,
                         } // Orange for stderr
                     } else {
                         result_glow_color
@@ -1514,34 +1783,60 @@ impl App {
             } else if let Some(ref result) = result_text {
                 // Fallback to result text if no streaming lines
                 if !result.is_empty() {
-                    // Split into lines and show all (scrollable)
-                    for line in result.lines() {
-                        terminal_column = terminal_column.push(
-                            text(line.to_string()).size(12).font(Font::MONOSPACE).style(
-                                move |_| iced::widget::text::Style {
-                                    color: Some(result_glow_color),
-                                },
-                            ),
-                        );
+                    // Handle Edit file specially - show diff with colors
+                    if is_edit {
+                        for line in result.lines() {
+                            let line_color = if line.starts_with('+') || line.starts_with("+ ") {
+                                Color { r: 0.4, g: 1.0, b: 0.5, a: content_opacity } // Green for additions
+                            } else if line.starts_with('-') || line.starts_with("- ") {
+                                Color { r: 1.0, g: 0.4, b: 0.4, a: content_opacity } // Red for deletions
+                            } else if line.starts_with("@@") || line.contains("line") {
+                                Color { r: 0.6, g: 0.8, b: 1.0, a: content_opacity } // Blue for line markers
+                            } else {
+                                Color { r: 0.7, g: 0.7, b: 0.7, a: content_opacity } // Gray for context
+                            };
+
+                            terminal_column = terminal_column.push(
+                                text(line.to_string())
+                                    .size(12)
+                                    .font(Font::MONOSPACE)
+                                    .style(move |_| iced::widget::text::Style {
+                                        color: Some(line_color),
+                                    }),
+                            );
+                        }
+                    } else {
+                        // Default rendering for other tools
+                        for line in result.lines() {
+                            terminal_column = terminal_column.push(
+                                text(line.to_string()).size(12).font(Font::MONOSPACE).style(
+                                    move |_| iced::widget::text::Style {
+                                        color: Some(result_glow_color),
+                                    },
+                                ),
+                            );
+                        }
                     }
                 }
             }
 
-            // Wrap in container with terminal background
+            // Wrap in container with tool-themed background
+            // Animate background opacity
+            let animated_bg = Color { a: terminal_bg_color.a * expand_progress, ..terminal_bg_color };
             let terminal_inner = container(terminal_column)
                 .padding([10, 14])
                 .width(Length::Fill)
                 .style(move |_| container::Style {
-                    background: Some(Background::Color(terminal_bg_color)),
+                    background: Some(Background::Color(animated_bg)),
                     border: Border {
-                        radius: 0.0.into(),
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
+                        radius: iced::border::Radius::new(0.0).bottom(8.0),
+                        width: 1.0,
+                        color: Color { a: bubble_accent_color.a * 0.3 * expand_progress, ..bubble_accent_color },
                     },
                     ..Default::default()
                 });
 
-            // Calculate line count to determine if we need fixed height (scrollable) or shrink
+            // Calculate line count to determine base height
             let line_count = if let Some(lines) = streaming_lines {
                 lines.len()
             } else if let Some(ref result) = result_text {
@@ -1550,9 +1845,25 @@ impl App {
                 0
             };
 
-            let scroll_height = if line_count > 5 {
-                Length::Fixed(100.0) // ~5 lines visible
+            // Calculate actual content height based on line count
+            // Each line ~18px (font size 12 + line spacing), plus padding
+            let line_height = 18.0_f32;
+            let content_padding = 24.0_f32; // Top + bottom padding
+            let natural_height = (line_count as f32 * line_height + content_padding).max(40.0);
+            
+            // Cap at max scrollable height for tall content
+            let max_visible_height = 200.0_f32;
+            let base_height = natural_height.min(max_visible_height);
+            let animated_height = base_height * expand_progress;
+            
+            let scroll_height = if expand_progress < 0.99 {
+                // During animation, use animated height scaling to actual size
+                Length::Fixed(animated_height.max(1.0))
+            } else if natural_height > max_visible_height {
+                // Tall content: use scrollable with max height
+                Length::Fixed(max_visible_height)
             } else {
+                // Short content: use natural size
                 Length::Shrink
             };
 
@@ -1596,6 +1907,185 @@ impl App {
             },
             ..Default::default()
         });
+
+        row![bubble, Space::with_width(Length::Fill)].into()
+    }
+
+    /// Creates a collapsible thinking bubble
+    /// Shows "Thought for X seconds" when finalized, or "Thinking..." when active
+    fn thinking_style_bubble<'a>(
+        &'a self,
+        _msg_idx: usize,
+        message: &'a MessageEntry,
+        key: &str,
+        pal: PaletteColors,
+        fade_opacity: f32,
+    ) -> Element<'a, Message> {
+        let is_finalized = message.thinking_duration_secs.is_some();
+        // Get animation state: default to collapsed (0.0) for finalized thinking
+        let spring = self.tool_animations.get(key);
+        let expand_progress = spring.map(|s| s.position).unwrap_or(if is_finalized { 0.0 } else { 1.0 });
+        let is_collapsed = spring.map(|s| s.target < 0.5).unwrap_or(is_finalized);
+        let key_owned = key.to_string();
+
+        // Purple/blue color scheme for thinking
+        let accent_color = Color {
+            r: 0.5,
+            g: 0.5,
+            b: 0.9,
+            a: fade_opacity,
+        };
+        let header_bg = Color {
+            r: 0.10,
+            g: 0.10,
+            b: 0.18,
+            a: fade_opacity * 0.98,
+        };
+        let content_bg = Color {
+            r: 0.06,
+            g: 0.06,
+            b: 0.12,
+            a: fade_opacity * 0.98,
+        };
+
+        // Header text based on state
+        let header_text = if let Some(duration) = message.thinking_duration_secs {
+            format!("Thought for {}s", duration.round() as i32)
+        } else {
+            "Thinking...".to_string()
+        };
+
+        // Build header row
+        let mut header_row = row![
+            text(Bootstrap::Lightbulb.to_string())
+                .size(14)
+                .font(iced_fonts::BOOTSTRAP_FONT)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(accent_color)
+                }),
+            Space::with_width(Length::Fixed(8.0)),
+            text(header_text)
+                .size(13)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(accent_color)
+                }),
+            Space::with_width(Length::Fill),
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        // Add chevron for finalized thinking (expandable)
+        if is_finalized {
+            let chevron = if is_collapsed {
+                Bootstrap::ChevronRight
+            } else {
+                Bootstrap::ChevronDown
+            };
+            header_row = header_row.push(
+                text(chevron.to_string())
+                    .size(12)
+                    .font(iced_fonts::BOOTSTRAP_FONT)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                    }),
+            );
+        }
+
+        // Header button
+        let header = if is_finalized {
+            button(header_row)
+                .on_press(Message::ToggleToolCollapse(key_owned))
+                .padding([8, 12])
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(header_bg)),
+                    border: Border {
+                        radius: if is_collapsed { 8.0.into() } else { iced::border::Radius::new(0.0).top(8.0) },
+                        width: 1.0,
+                        color: Color { a: accent_color.a * 0.5, ..accent_color },
+                    },
+                    text_color: pal.text,
+                    ..Default::default()
+                })
+        } else {
+            // Active thinking - not clickable
+            button(header_row)
+                .padding([8, 12])
+                .style(move |_theme, _status| button::Style {
+                    background: Some(Background::Color(header_bg)),
+                    border: Border {
+                        radius: 8.0.into(),
+                        width: 1.0,
+                        color: Color { a: accent_color.a * 0.5, ..accent_color },
+                    },
+                    text_color: pal.text,
+                    ..Default::default()
+                })
+        };
+
+        // Content area (only for expanded finalized thinking)
+        // Uses expand_progress for smooth animation
+        let thinking_content: Element<'_, Message> = if !is_finalized || expand_progress < 0.01 {
+            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+        } else {
+            // Animate opacity with expand
+            let content_opacity = fade_opacity * expand_progress;
+            let text_color = Color {
+                r: 0.7,
+                g: 0.7,
+                b: 0.9,
+                a: content_opacity,
+            };
+
+            // Animate background opacity
+            let animated_bg = Color { a: content_bg.a * expand_progress, ..content_bg };
+            let content_inner = container(
+                text(&message.content)
+                    .size(13)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(text_color),
+                    }),
+            )
+            .padding([10, 14])
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(animated_bg)),
+                border: Border {
+                    radius: iced::border::Radius::new(0.0).bottom(8.0),
+                    width: 1.0,
+                    color: Color { a: accent_color.a * 0.3 * expand_progress, ..accent_color },
+                },
+                ..Default::default()
+            });
+
+            // Calculate actual content height based on line count
+            let line_count = message.content.lines().count();
+            let line_height = 18.0_f32;
+            let content_padding = 24.0_f32;
+            let natural_height = (line_count as f32 * line_height + content_padding).max(40.0);
+            
+            let max_visible_height = 200.0_f32;
+            let base_height = natural_height.min(max_visible_height);
+            let animated_height = base_height * expand_progress;
+            
+            let scroll_height = if expand_progress < 0.99 {
+                Length::Fixed(animated_height.max(1.0))
+            } else if natural_height > max_visible_height {
+                Length::Fixed(max_visible_height)
+            } else {
+                Length::Shrink
+            };
+
+            scrollable(content_inner)
+                .height(scroll_height)
+                .width(Length::Fill)
+                .into()
+        };
+
+        // Outer container
+        let bubble = container(
+            column![header, thinking_content].spacing(0),
+        )
+        .max_width(MESSAGE_MAX_WIDTH);
 
         row![bubble, Space::with_width(Length::Fill)].into()
     }
