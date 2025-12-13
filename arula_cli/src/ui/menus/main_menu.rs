@@ -20,6 +20,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub enum MainMenuItem {
     ContinueChat,
+    InitProject,
     Conversations,
     Settings,
     InfoHelp,
@@ -30,6 +31,7 @@ impl MainMenuItem {
     pub fn all() -> Vec<Self> {
         vec![
             MainMenuItem::ContinueChat,
+            MainMenuItem::InitProject,
             MainMenuItem::Conversations,
             MainMenuItem::Settings,
             MainMenuItem::InfoHelp,
@@ -40,6 +42,7 @@ impl MainMenuItem {
     pub fn label(&self) -> &str {
         match self {
             MainMenuItem::ContinueChat => "⦿ Continue Chat",
+            MainMenuItem::InitProject => "🚀 Initialize Project",
             MainMenuItem::Conversations => "📚 Conversations",
             MainMenuItem::Settings => "⚙ Configuration",
             MainMenuItem::InfoHelp => "ℹ Info & Help",
@@ -50,6 +53,7 @@ impl MainMenuItem {
     pub fn description(&self) -> &str {
         match self {
             MainMenuItem::ContinueChat => "Return to conversation",
+            MainMenuItem::InitProject => "Initialize a new project using AI",
             MainMenuItem::Conversations => "View, load, or manage saved conversations",
             MainMenuItem::Settings => "Configure AI provider and configuration",
             MainMenuItem::InfoHelp => "View help and session information",
@@ -180,7 +184,7 @@ impl MainMenu {
     fn render(&self, _output: &mut OutputHandler) -> Result<()> {
         let (cols, rows) = crossterm::terminal::size()?;
         let menu_width = 50.min(cols.saturating_sub(4));
-        let menu_height = 10;
+        let menu_height = 11; // Increased by 1 for new menu item
         let start_x = if cols > menu_width {
             (cols - menu_width) / 2
         } else {
@@ -294,6 +298,17 @@ impl MainMenu {
                     stdout().execute(crossterm::cursor::MoveTo(0, 0))?;
                     stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
                     stdout().flush()?;
+                    Ok(MenuResult::Continue)
+                }
+                MainMenuItem::InitProject => {
+                    // Clear menu overlay before showing init
+                    stdout().execute(crossterm::cursor::MoveTo(0, 0))?;
+                    stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
+                    stdout().flush()?;
+
+                    // Initialize a project
+                    self.handle_project_init(app, output)?;
+
                     Ok(MenuResult::Continue)
                 }
                 MainMenuItem::Conversations => {
@@ -578,6 +593,289 @@ impl MainMenu {
             .queue(ResetColor)?;
 
         stdout().flush()?;
+        Ok(())
+    }
+
+    /// Handle project initialization
+    fn handle_project_init(&self, app: &mut App, output: &mut OutputHandler) -> Result<()> {
+        use crossterm::{
+            cursor::MoveTo,
+            style::{Print, SetForegroundColor, ResetColor, Color},
+            ExecutableCommand,
+            event::{Event, KeyCode, KeyEventKind},
+        };
+        use std::io::{stdout, Write};
+        use std::time::Duration;
+
+        // Draw input dialog
+        let (cols, rows) = crossterm::terminal::size()?;
+        let dialog_width = 70.min(cols.saturating_sub(4));
+        let dialog_height = 8;
+        let start_x = if cols > dialog_width {
+            (cols - dialog_width) / 2
+        } else {
+            0
+        };
+        let start_y = if rows > dialog_height {
+            (rows - dialog_height) / 2
+        } else {
+            0
+        };
+
+        // Clear the dialog area
+        stdout().execute(MoveTo(0, start_y))?;
+        for _ in 0..dialog_height {
+            stdout().queue(Print(" ".repeat(cols as usize)))?;
+        }
+
+        // Draw dialog box
+        draw_modern_box(start_x, start_y, dialog_width, dialog_height)?;
+
+        // Draw title
+        let title = "🚀 Initialize New Project";
+        let title_x = if dialog_width > title.len() as u16 {
+            start_x + (dialog_width - title.len() as u16) / 2
+        } else {
+            start_x + 1
+        };
+        stdout()
+            .queue(MoveTo(title_x, start_y + 1))?
+            .queue(SetForegroundColor(Color::Cyan))?
+            .queue(Print(title))?
+            .queue(ResetColor)?;
+
+        // Draw prompt
+        let prompt = "Describe your project (optional, press Enter to use default):";
+        let prompt_y = start_y + 3;
+        stdout()
+            .queue(MoveTo(start_x + 2, prompt_y))?
+            .queue(SetForegroundColor(Color::Grey))?
+            .queue(Print(prompt))?
+            .queue(ResetColor)?;
+
+        // Input field
+        let mut input = String::new();
+        let input_y = start_y + 4;
+        let input_max_width = dialog_width.saturating_sub(6) as usize;
+
+        loop {
+            // Draw input field with current input
+            stdout().queue(MoveTo(start_x + 3, input_y))?;
+            // Clear the input line
+            for _ in 0..input_max_width {
+                stdout().queue(Print(" "))?;
+            }
+            stdout().queue(MoveTo(start_x + 3, input_y))?;
+            stdout().queue(Print(&input))?;
+            stdout().flush()?;
+
+            // Wait for input
+            if crossterm::event::poll(Duration::from_millis(100))? {
+                match crossterm::event::read()? {
+                    Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                        match key_event.code {
+                            KeyCode::Enter => {
+                                // Initialize project (allow empty description)
+                                let description = if input.trim().is_empty() {
+                                    "A general software project"
+                                } else {
+                                    &input
+                                };
+                                self.initialize_project_with_description(app, output, description)?;
+                                break;
+                            }
+                            KeyCode::Esc => {
+                                // Cancel
+                                break;
+                            }
+                            KeyCode::Backspace => {
+                                input.pop();
+                            }
+                            KeyCode::Char(c) => {
+                                if input.len() < 200 {
+                                    input.push(c);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Clear dialog
+        stdout().execute(MoveTo(0, start_y))?;
+        for _ in 0..dialog_height {
+            stdout().queue(Print(" ".repeat(cols as usize)))?;
+        }
+        stdout().flush()?;
+
+        Ok(())
+    }
+
+    /// Actually initialize the project using the init system
+    fn initialize_project_with_description(
+        &self,
+        app: &mut App,
+        _output: &OutputHandler,
+        description: &str,
+    ) -> Result<()> {
+        use crossterm::{
+            cursor::MoveTo,
+            style::{Print, SetForegroundColor, ResetColor, Color},
+            ExecutableCommand,
+        };
+        use std::io::{stdout, Write};
+        use tokio::sync::oneshot;
+        use std::time::{Duration, Instant};
+
+        // Clear screen for progress display
+        let (cols, _) = crossterm::terminal::size()?;
+        stdout().execute(MoveTo(0, 5))?;
+        for _ in 0..20 {
+            stdout().queue(Print(" ".repeat(cols as usize)))?;
+        }
+
+        // Show progress
+        let y = 7;
+        stdout()
+            .queue(MoveTo(2, y))?
+            .queue(SetForegroundColor(Color::Cyan))?
+            .queue(Print("🚀 Initializing Project"))?
+            .queue(ResetColor)?;
+        stdout().queue(MoveTo(2, y + 1))?;
+        stdout().queue(Print("Generating project blueprint..."))?;
+        stdout().flush()?;
+
+        // Initialize project using a channel to avoid runtime blocking
+        if let Some(agent_client) = &app.agent_client {
+            use arula_core::init::InitSystem;
+
+            let init_system = InitSystem::new(
+                agent_client.clone(),
+                app.config.clone()
+            );
+
+            // Use a oneshot channel to get the result
+            let (tx, mut rx) = oneshot::channel();
+            let desc = description.to_string();
+
+            // Clone init_system for the async task
+            let init_system_clone = init_system.clone();
+
+            // Spawn a task to run the async initialization
+            tokio::spawn(async move {
+                let result = init_system_clone.initialize_project(&desc).await;
+                let _ = tx.send(result);
+            });
+
+            // Wait for the result with a timeout using blocking poll
+            let start = Instant::now();
+            let timeout = Duration::from_secs(60);
+
+            let blueprint = loop {
+                // Check if we've timed out
+                if start.elapsed() > timeout {
+                    stdout()
+                        .queue(MoveTo(2, y + 3))?
+                        .queue(SetForegroundColor(Color::Red))?
+                        .queue(Print("✗ Initialization timed out"))?
+                        .queue(ResetColor)?;
+                    stdout().flush()?;
+                    return Ok(());
+                }
+
+                // Try to receive the result
+                match rx.try_recv() {
+                    Ok(Ok(blueprint)) => break Some(blueprint),
+                    Ok(Err(_)) => {
+                        stdout()
+                            .queue(MoveTo(2, y + 3))?
+                            .queue(SetForegroundColor(Color::Red))?
+                            .queue(Print("✗ Failed to initialize project"))?
+                            .queue(ResetColor)?;
+                        stdout().flush()?;
+                        return Ok(());
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                        // Still waiting, sleep a bit
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        // Sender was dropped
+                        stdout()
+                            .queue(MoveTo(2, y + 3))?
+                            .queue(SetForegroundColor(Color::Red))?
+                            .queue(Print("✗ Initialization failed"))?
+                            .queue(ResetColor)?;
+                        stdout().flush()?;
+                        return Ok(());
+                    }
+                }
+            };
+
+            if let Some(blueprint) = blueprint {
+                stdout()
+                    .queue(MoveTo(2, y + 3))?
+                    .queue(SetForegroundColor(Color::Green))?
+                    .queue(Print("✓ Project blueprint created successfully"))?
+                    .queue(ResetColor)?;
+
+                stdout().queue(MoveTo(2, y + 4))?;
+                stdout().queue(Print(format!("  Domain: {}", blueprint.domain.primary)))?;
+                stdout().queue(MoveTo(2, y + 5))?;
+                stdout().queue(Print(format!("  Actions: {}", blueprint.flow.actions.len())))?;
+
+                // Generate SBP files
+                match init_system.generate_sbp_files(&blueprint) {
+                    Ok(sbp_files) => {
+                        stdout()
+                            .queue(MoveTo(2, y + 6))?
+                            .queue(SetForegroundColor(Color::Green))?
+                            .queue(Print("✓ SBP files generated"))?
+                            .queue(ResetColor)?;
+
+                        // Save files to current directory
+                        std::fs::write("DOMAIN.sbp", sbp_files.domain_sbp)?;
+                        std::fs::write("FLOW.sbp", sbp_files.flow_sbp)?;
+                        std::fs::write("CONSTRAINTS.sbp", sbp_files.constraints_sbp)?;
+                        std::fs::write("EXAMPLES.sbp", sbp_files.examples_sbp)?;
+
+                        stdout()
+                            .queue(MoveTo(2, y + 7))?
+                            .queue(SetForegroundColor(Color::Yellow))?
+                            .queue(Print("Files created: DOMAIN.sbp, FLOW.sbp, CONSTRAINTS.sbp, EXAMPLES.sbp"))?
+                            .queue(ResetColor)?;
+                    }
+                    Err(e) => {
+                        stdout()
+                            .queue(MoveTo(2, y + 6))?
+                            .queue(SetForegroundColor(Color::Red))?
+                            .queue(Print(format!("Error generating SBP files: {}", e)))?
+                            .queue(ResetColor)?;
+                    }
+                }
+            }
+        } else {
+            stdout()
+                .queue(MoveTo(2, y + 3))?
+                .queue(SetForegroundColor(Color::Red))?
+                .queue(Print("Error: No AI client available"))?
+                .queue(ResetColor)?;
+            stdout().flush()?;
+            return Ok(());
+        }
+
+        stdout().queue(MoveTo(2, y + 9))?;
+        stdout().queue(Print("Press any key to continue..."))?;
+        stdout().flush()?;
+
+        // Wait for any key press
+        use crossterm::event;
+        while !event::poll(Duration::from_millis(100))? {}
+        let _ = event::read()?;
+
         Ok(())
     }
 

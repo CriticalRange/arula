@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod app;
+pub mod init;
 pub mod prelude;
 pub mod session_manager;
 pub mod tools;
