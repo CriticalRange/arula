@@ -428,11 +428,10 @@ You have access to tools for file operations, shell commands, and more. Use them
         if manifest_path.exists() {
             match fs::read_to_string(manifest_path) {
                 Ok(content) => {
-                    debug_print("DEBUG: Loaded PROJECT.manifest - primary project context available");
-                    Some(format!(
-                        "PROJECT MANIFEST CONTENT:\n\n{}",
-                        content
-                    ))
+                    debug_print(
+                        "DEBUG: Loaded PROJECT.manifest - primary project context available",
+                    );
+                    Some(format!("PROJECT MANIFEST CONTENT:\n\n{}", content))
                 }
                 Err(e) => {
                     debug_print(&format!("DEBUG: Failed to read PROJECT.manifest: {}", e));
@@ -1898,7 +1897,9 @@ You have access to tools for file operations, shell commands, and more. Use them
         info.push_str("- `path` (string, required)\n");
         info.push_str("- `old_text` (string, required)\n");
         info.push_str("- `new_text` (string, required)\n");
-        info.push_str("  Example: `edit_file(path=\"file.txt\", old_text=\"old\", new_text=\"new\")`\n\n");
+        info.push_str(
+            "  Example: `edit_file(path=\"file.txt\", old_text=\"old\", new_text=\"new\")`\n\n",
+        );
 
         info.push_str("6) search_files — regex search in files\n");
         info.push_str("- `path` (string, required) — root directory\n");

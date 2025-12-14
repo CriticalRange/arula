@@ -53,7 +53,10 @@ Feel free to ask questions to clarify anything that's unclear. Provide a brief s
     }
 
     /// Step 2: Discover architecture and technical details
-    pub async fn discover_architecture(&self, context: &ProjectContext) -> Result<ArchitectureFragment> {
+    pub async fn discover_architecture(
+        &self,
+        context: &ProjectContext,
+    ) -> Result<ArchitectureFragment> {
         let instruction = format!(
             "{}Now that I understand the project context, help me learn about the technical architecture.
 
@@ -77,7 +80,11 @@ This is about exploration and learning, not making final decisions. Ask question
     }
 
     /// Step 3: Identify requirements and constraints
-    pub async fn identify_requirements(&self, context: &ProjectContext, architecture: &ArchitectureFragment) -> Result<RequirementsFragment> {
+    pub async fn identify_requirements(
+        &self,
+        context: &ProjectContext,
+        architecture: &ArchitectureFragment,
+    ) -> Result<RequirementsFragment> {
         let instruction = format!(
             "{}Based on what we've learned so far, help me identify the requirements.
 
@@ -92,10 +99,7 @@ Help me discover:
 4. What assumptions are we making?
 
 This is about understanding what needs to be built, not how to build it yet.",
-            LEARNING_GUIDELINES,
-            context.purpose,
-            context.user_goals,
-            architecture.technologies
+            LEARNING_GUIDELINES, context.purpose, context.user_goals, architecture.technologies
         );
 
         let response = self.query_ai(&instruction).await?;
@@ -261,10 +265,9 @@ This assessment will help me understand where the project stands and what needs 
             // Extract constraints
             if line_lower.contains("constraint") || line_lower.contains("limitation") {
                 if let Some((key, value)) = line.split_once(':') {
-                    requirements.constraints.insert(
-                        key.trim().to_string(),
-                        value.trim().to_string()
-                    );
+                    requirements
+                        .constraints
+                        .insert(key.trim().to_string(), value.trim().to_string());
                 }
             }
 

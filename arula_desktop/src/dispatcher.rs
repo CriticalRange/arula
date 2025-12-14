@@ -5,10 +5,10 @@
 
 use arula_core::api::api::ChatMessage;
 use arula_core::{SessionConfig, SessionManager, UiEvent};
-use futures::StreamExt;
 use iced::Subscription;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::broadcast;
 use uuid::Uuid;
+use std::sync::Arc;
 
 /// UI-facing dispatcher - thin wrapper around core's SessionManager.
 ///
@@ -50,25 +50,15 @@ impl Dispatcher {
             .start_stream(session_id, prompt, history, session_config)
     }
 
+    /// Returns the broadcast receiver for UI events.
+    pub fn subscribe(&self) -> broadcast::Receiver<UiEvent> {
+        self.manager.subscribe()
+    }
+
     /// Creates an Iced subscription to receive UI events.
-    pub fn subscription<Message: 'static + Send + Clone>(
-        &self,
-        map_fn: impl Fn(UiEvent) -> Message + Send + Clone + 'static,
-    ) -> Subscription<Message> {
+    pub fn subscription(&self) -> Subscription<UiEvent> {
         let rx = self.manager.subscribe();
-        Subscription::run_with_id("dispatcher-stream", {
-            let rx_stream = BroadcastStream::new(rx);
-            iced::futures::stream::unfold(rx_stream, |mut stream| async {
-                while let Some(next) = stream.next().await {
-                    match next {
-                        Ok(ev) => return Some((ev, stream)),
-                        Err(_) => continue,
-                    }
-                }
-                None
-            })
-        })
-        .map(map_fn)
+        dispatcher_subscription(rx)
     }
 
     // ==================== Model Fetching Delegations ====================
@@ -112,4 +102,46 @@ impl Dispatcher {
     pub fn get_cached_zai_models(&self) -> Option<Vec<String>> {
         self.manager.get_cached_zai_models()
     }
+}
+
+/// Wrapper to make the receiver hashable for run_with
+#[derive(Clone)]
+struct ReceiverWrapper(Arc<std::sync::Mutex<Option<broadcast::Receiver<UiEvent>>>>);
+
+impl std::hash::Hash for ReceiverWrapper {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Use a unique id based on the Arc pointer
+        std::ptr::addr_of!(*self.0).hash(state);
+    }
+}
+
+/// Creates an Iced subscription to receive UI events from the dispatcher.
+pub fn dispatcher_subscription(
+    rx: broadcast::Receiver<UiEvent>,
+) -> Subscription<UiEvent> {
+    use futures::StreamExt;
+    use iced::futures::channel::mpsc;
+    use iced::stream;
+    use tokio_stream::wrappers::BroadcastStream;
+    
+    let wrapper = ReceiverWrapper(Arc::new(std::sync::Mutex::new(Some(rx))));
+    
+    Subscription::run_with(wrapper, |wrapper: &ReceiverWrapper| {
+        let rx = wrapper.0.lock().unwrap().take();
+        stream::channel(100, move |mut output: mpsc::Sender<UiEvent>| async move {
+            if let Some(rx) = rx {
+                let mut rx_stream = BroadcastStream::new(rx);
+                loop {
+                    match rx_stream.next().await {
+                        Some(Ok(event)) => {
+                            use iced::futures::SinkExt;
+                            let _ = output.send(event).await;
+                        }
+                        Some(Err(_)) => continue,
+                        None => break,
+                    }
+                }
+            }
+        })
+    })
 }

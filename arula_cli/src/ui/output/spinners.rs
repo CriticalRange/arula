@@ -20,6 +20,16 @@ pub enum SpinnerStyle {
     Search,
     /// Custom orbital spinner (for main AI responses)
     Orbital,
+    /// Neural network thinking animation (neural pattern)
+    NeuralThinking,
+    /// DNA helix animation (for biological/organic processes)
+    Helix,
+    /// Quantum computing animation (for complex operations)
+    Quantum,
+    /// Pulse wave animation (for heartbeat/monitoring)
+    Pulse,
+    /// Matrix rain animation (for data processing)
+    Matrix,
 }
 
 impl SpinnerStyle {

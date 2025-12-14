@@ -30,6 +30,7 @@ pub mod bash;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
+pub mod find_files;
 pub mod list_dir;
 pub mod question;
 pub mod search;
@@ -45,6 +46,8 @@ pub use file_edit::{FileEditParams, FileEditResult, FileEditTool};
 pub use file_read::{FileReadParams, FileReadResult, FileReadTool};
 #[allow(unused_imports)]
 pub use file_write::{WriteFileParams, WriteFileResult, WriteFileTool};
+#[allow(unused_imports)]
+pub use find_files::{FindFilesParams, FindFilesResult, FindFilesTool, FoundFile};
 #[allow(unused_imports)]
 pub use list_dir::{DirectoryEntry, ListDirParams, ListDirResult, ListDirectoryTool};
 #[allow(unused_imports)]

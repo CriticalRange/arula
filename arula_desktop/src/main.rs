@@ -2,27 +2,28 @@
 
 use arula_core::utils::config::Config;
 use arula_core::SessionConfig;
-use arula_desktop::canvas::{LiquidMenuBackground, LivingBackground};
+use arula_desktop::animation::Spring;
+use arula_desktop::canvas::{
+    LiquidMenuBackground, LivingBackground, LoadingSpinner, SpinnerState, SpinnerType,
+};
 use arula_desktop::styles::{
     ai_bubble_style, chat_input_container_style, chat_input_style,
     cog_button_container_style_button, input_style, primary_button_style, send_button_style,
     transparent_style, user_bubble_style,
 };
-use arula_desktop::animation::Spring;
 use arula_desktop::{
-    app_theme, collect_provider_options, palette, ConfigForm, Dispatcher, LiquidMenuState,
-    LivingBackgroundState, MessageEntry, PaletteColors, Session, SettingsMenuState, SettingsPage,
-    TiltCardState, UiEvent, MENU_BUTTON_SIZE, MESSAGE_MAX_WIDTH, PAGE_SLIDE_DISTANCE,
+    app_theme, collect_provider_options, palette, ConfigForm, Dispatcher,
+    LiquidMenuState, LivingBackgroundState, MessageEntry, PaletteColors, Session, SettingsMenuState,
+    SettingsPage, TiltCardState, UiEvent, MENU_BUTTON_SIZE, MESSAGE_MAX_WIDTH, PAGE_SLIDE_DISTANCE,
     SETTINGS_CARD_WIDTH, TICK_INTERVAL_MS, TILT_CARD_COUNT,
 };
-use iced_fonts::Bootstrap;
+use iced_fonts::bootstrap;
 
 use chrono::Utc;
 use iced::alignment::{Horizontal, Vertical};
 use iced::time::{self, Duration};
 use iced::widget::canvas::Canvas;
 use iced::widget::text_editor;
-use iced::widget::text_input::Id as TextInputId;
 use iced::widget::{
     button, column, container, markdown, pick_list, row, scrollable, stack, text, text_input, Space,
 };
@@ -53,6 +54,8 @@ struct App {
     model_list: Vec<String>,
     /// Whether models are currently being fetched
     models_loading: bool,
+    /// Loading spinner state for various UI elements
+    spinner_state: SpinnerState,
     /// Cached parsed markdown for AI messages (keyed by session_index:message_index)
     markdown_cache: HashMap<String, Vec<markdown::Item>>,
     /// Track tool display args from ToolCallStart to show in ToolCallResult (keyed by session_id)
@@ -107,7 +110,7 @@ enum Message {
     /// Select a model from the list
     SelectModel(String),
     /// Handle markdown link clicks
-    LinkClicked(markdown::Url),
+    LinkClicked(markdown::Uri),
     /// Stop the current streaming session
     StopStream,
     /// Toggle collapse state for a tool message bubble
@@ -118,11 +121,13 @@ enum Message {
     ToggleErrorExpand,
     /// Copy message content to clipboard
     CopyToClipboard(String),
+    /// Clear the current chat session
+    ClearChat,
 }
 
 /// Input field ID for focus management
-fn input_id() -> TextInputId {
-    TextInputId::new("chat-input")
+fn input_id() -> iced::widget::Id {
+    iced::widget::Id::new("chat-input")
 }
 
 /// Read ARULA.md from ~/.arula/ directory
@@ -176,7 +181,7 @@ impl App {
     fn init() -> (Self, Task<Message>) {
         match Self::try_init() {
             // Focus the input field on startup
-            Ok(app) => (app, text_input::focus(input_id())),
+            Ok(app) => (app, iced::widget::operation::focus(input_id())),
             Err(err) => {
                 eprintln!("Initialization error: {err}");
                 (Self::error_state(err.to_string()), Task::none())
@@ -221,6 +226,13 @@ impl App {
             message_editors: HashMap::new(),
             model_list: Vec::new(),
             models_loading: false,
+            spinner_state: SpinnerState {
+                tick: 0.0,
+                spinner_type: SpinnerType::Orbital,
+                size: 20.0,
+                color: Color::from_rgba(0.4, 0.4, 0.4, 1.0),
+                accent_color: Color::from_rgba(0.6, 0.6, 0.6, 1.0),
+            },
             markdown_cache: HashMap::new(),
             tool_args_cache: HashMap::new(),
             tool_animations: HashMap::new(),
@@ -249,6 +261,13 @@ impl App {
             message_editors: HashMap::new(),
             model_list: Vec::new(),
             models_loading: false,
+            spinner_state: SpinnerState {
+                tick: 0.0,
+                spinner_type: SpinnerType::Orbital,
+                size: 20.0,
+                color: Color::from_rgba(0.4, 0.4, 0.4, 1.0),
+                accent_color: Color::from_rgba(0.6, 0.6, 0.6, 1.0),
+            },
             markdown_cache: HashMap::new(),
             tool_args_cache: HashMap::new(),
             tool_animations: HashMap::new(),
@@ -311,7 +330,7 @@ impl App {
                     }
                 }
                 // Re-focus input after sending
-                return text_input::focus(input_id());
+                return iced::widget::operation::focus(input_id());
             }
             Message::Received(ev) => return self.handle_ui_event(ev),
             Message::NewTab => {
@@ -331,6 +350,9 @@ impl App {
                 self.menu_state.update();
                 self.settings_state.update(); // Update settings page transitions
                 self.bg_state.update();
+
+                // Update spinner animation
+                self.spinner_state.tick += 0.016; // ~60fps
 
                 // Animate background opacity based on config
                 // We use the *config* value (saved), not the form value, to drive the actual display
@@ -386,7 +408,7 @@ impl App {
                         card.clear_cache();
                     }
                 }
-                
+
                 // Update tool expand/collapse animations
                 for spring in self.tool_animations.values_mut() {
                     spring.update();
@@ -515,7 +537,7 @@ impl App {
                         self.dispatcher.stop_stream(session.id);
                         session.set_streaming(false);
                         // Re-focus the input after stopping
-                        return text_input::focus(input_id());
+                        return iced::widget::operation::focus(input_id());
                     }
                 }
             }
@@ -523,13 +545,16 @@ impl App {
                 // Get or create animation spring for this tool
                 // Important: we need to know the DEFAULT state to create the spring correctly
                 // Thinking bubbles (finalized) default to collapsed, tools default to expanded
-                let is_thinking = key.contains(":") && self.sessions.iter().enumerate().any(|(sidx, session)| {
-                    session.messages.iter().enumerate().any(|(midx, msg)| {
-                        let msg_key = format!("{}:{}", sidx, midx);
-                        msg_key == key && msg.is_thinking() && msg.thinking_duration_secs.is_some()
-                    })
-                });
-                
+                let is_thinking = key.contains(":")
+                    && self.sessions.iter().enumerate().any(|(sidx, session)| {
+                        session.messages.iter().enumerate().any(|(midx, msg)| {
+                            let msg_key = format!("{}:{}", sidx, midx);
+                            msg_key == key
+                                && msg.is_thinking()
+                                && msg.thinking_duration_secs.is_some()
+                        })
+                    });
+
                 let spring = self.tool_animations.entry(key).or_insert_with(|| {
                     let mut s = Spring::default();
                     if is_thinking {
@@ -543,7 +568,7 @@ impl App {
                     }
                     s
                 });
-                
+
                 // Toggle the target: 0.0 = collapsed, 1.0 = expanded
                 let new_target = if spring.target > 0.5 { 0.0 } else { 1.0 };
                 spring.set_target(new_target);
@@ -560,6 +585,53 @@ impl App {
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(text);
                 }
+            }
+            Message::ClearChat => {
+                let session_id = self.sessions.get(self.current).map(|s| s.id);
+                let was_streaming = self
+                    .sessions
+                    .get(self.current)
+                    .map(|s| s.is_streaming)
+                    .unwrap_or(false);
+                let tool_call_ids: Vec<String> = self
+                    .sessions
+                    .get(self.current)
+                    .map(|s| {
+                        s.messages
+                            .iter()
+                            .filter_map(|m| m.tool_call_id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if was_streaming {
+                    if let Some(id) = session_id {
+                        self.dispatcher.stop_stream(id);
+                    }
+                }
+
+                // Drop all cached UI state for this session so the next chat is pristine
+                let prefix = format!("{}:", self.current);
+                self.message_editors.retain(|k, _| !k.starts_with(&prefix));
+                self.markdown_cache.retain(|k, _| !k.starts_with(&prefix));
+                self.tool_animations.retain(|k, _| !k.starts_with(&prefix));
+
+                if let Some(id) = session_id {
+                    self.tool_args_cache.remove(&id);
+                }
+                for tool_call_id in tool_call_ids {
+                    self.bash_output_lines.remove(&tool_call_id);
+                }
+
+                self.stream_error = None;
+                self.error_expanded = false;
+                self.draft.clear();
+
+                if let Some(session) = self.sessions.get_mut(self.current) {
+                    *session = Session::new();
+                }
+
+                return iced::widget::operation::focus(input_id());
             }
         }
         Task::none()
@@ -627,7 +699,7 @@ impl App {
                         session.flush_ai_buffer(Utc::now().to_rfc3339());
                         session.set_streaming(false);
                         // Re-focus input when streaming completes
-                        return text_input::focus(input_id());
+                        return iced::widget::operation::focus(input_id());
                     }
                 }
             }
@@ -638,7 +710,7 @@ impl App {
                     s.set_streaming(false);
                 }
                 // Re-focus input when stream finishes
-                return text_input::focus(input_id());
+                return iced::widget::operation::focus(input_id());
             }
             UiEvent::StreamErrored(id, err) => {
                 eprintln!("stream error {id}: {err}");
@@ -648,7 +720,7 @@ impl App {
                     s.set_streaming(false);
                 }
                 // Re-focus input on error
-                return text_input::focus(input_id());
+                return iced::widget::operation::focus(input_id());
             }
             UiEvent::Thinking(id, text) => {
                 // Create a thinking/reasoning bubble to show the AI's thought process
@@ -727,14 +799,14 @@ impl App {
                     "{} {}{} {} {}",
                     icon, display_name, extra_info, status, result_summary
                 );
-                
+
                 // Find session index first, then update tool message
                 let session_idx = self.sessions.iter().position(|s| s.id == id);
-                
+
                 if let Some(idx) = session_idx {
                     let session = &mut self.sessions[idx];
                     session.update_tool_message(content, Utc::now().to_rfc3339());
-                    
+
                     // Auto-collapse the tool bubble when it completes
                     // Find the last tool message index
                     if let Some(msg_idx) = session.messages.iter().rposition(|m| m.is_tool()) {
@@ -803,7 +875,7 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let stream = self.dispatcher.subscription(Message::Received);
+        let stream = self.dispatcher.subscription().map(Message::Received);
         let ticks = time::every(Duration::from_millis(TICK_INTERVAL_MS)).map(|_| Message::Tick);
         Subscription::batch(vec![stream, ticks])
     }
@@ -828,8 +900,9 @@ impl App {
         let session = &self.sessions[self.current];
         let is_streaming = session.is_streaming;
 
-        // Build main layer with optional typing indicator above input
-        let mut main_content: Vec<Element<'_, Message>> = vec![self.chat_panel(pal)];
+        // Build main layer with top bar, chat content, optional typing indicator, and input
+        let mut main_content: Vec<Element<'_, Message>> = vec![self.top_bar(pal)];
+        main_content.push(self.chat_panel(pal));
 
         // Add typing indicator above input when streaming
         if is_streaming {
@@ -846,7 +919,7 @@ impl App {
         let overlay = if progress > 0.01 {
             self.settings_overlay(pal).into()
         } else {
-            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            Space::new().into()
         };
 
         // Error notification overlay
@@ -865,16 +938,15 @@ impl App {
             };
 
             let chevron = if self.error_expanded {
-                Bootstrap::ChevronDown
+                bootstrap::chevron_down()
             } else {
-                Bootstrap::ChevronRight
+                bootstrap::chevron_right()
             };
 
             // Header row (always visible, clickable to expand)
             let header_row = row![
-                text(Bootstrap::ExclamationTriangleFill.to_string())
+                text("!")
                     .size(18)
-                    .font(iced_fonts::BOOTSTRAP_FONT)
                     .style(move |_| iced::widget::text::Style {
                         color: Some(Color {
                             r: 1.0,
@@ -883,24 +955,26 @@ impl App {
                             a: 1.0
                         })
                     }),
-                Space::with_width(Length::Fixed(8.0)),
-                text(chevron.to_string())
+                Space::new().width(Length::Fixed(8.0)),
+                chevron
                     .size(12)
-                    .font(iced_fonts::BOOTSTRAP_FONT)
                     .style(move |_| iced::widget::text::Style {
                         color: Some(Color { a: 0.7, ..pal.text })
                     }),
-                Space::with_width(Length::Fixed(8.0)),
-                text(if self.error_expanded { "Error Details".to_string() } else { short_error })
-                    .size(13)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.text)
-                    }),
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fixed(8.0)),
+                text(if self.error_expanded {
+                    "Error Details".to_string()
+                } else {
+                    short_error
+                })
+                .size(13)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(pal.text)
+                }),
+                Space::new().width(Length::Fill),
                 button(
-                    text(Bootstrap::XLg.to_string())
+                    text("×")
                         .size(14)
-                        .font(iced_fonts::BOOTSTRAP_FONT)
                         .style(move |_| iced::widget::text::Style {
                             color: Some(pal.text)
                         })
@@ -931,63 +1005,58 @@ impl App {
             // Expanded content (full error details)
             let expanded_content: Element<'_, Message> = if self.error_expanded {
                 container(
-                    scrollable(
-                        text(error.as_str())
-                            .size(12)
-                            .font(Font::MONOSPACE)
-                            .style(move |_| iced::widget::text::Style {
-                                color: Some(Color {
-                                    r: 1.0,
-                                    g: 0.7,
-                                    b: 0.7,
-                                    a: 1.0
-                                })
-                            })
-                    )
-                    .height(Length::Fixed(120.0))
+                    scrollable(text(error.as_str()).size(12).font(Font::MONOSPACE).style(
+                        move |_| iced::widget::text::Style {
+                            color: Some(Color {
+                                r: 1.0,
+                                g: 0.7,
+                                b: 0.7,
+                                a: 1.0,
+                            }),
+                        },
+                    ))
+                    .height(Length::Fixed(120.0)),
                 )
                 .padding([6, 16])
                 .width(Length::Fill)
                 .into()
             } else {
-                Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+                Space::new().into()
             };
 
-            let error_container = container(
-                column![header_button, expanded_content].spacing(0),
-            )
-            .max_width(600.0)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(Color {
-                    r: 0.2,
-                    g: 0.08,
-                    b: 0.08,
-                    a: 0.95,
-                })),
-                border: Border {
-                    radius: 8.0.into(),
-                    width: 1.0,
-                    color: Color {
-                        r: 0.8,
-                        g: 0.3,
-                        b: 0.3,
-                        a: 0.8,
+            let error_container = container(column![header_button, expanded_content].spacing(0))
+                .max_width(600.0)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(Color {
+                        r: 0.2,
+                        g: 0.08,
+                        b: 0.08,
+                        a: 0.95,
+                    })),
+                    border: Border {
+                        radius: 8.0.into(),
+                        width: 1.0,
+                        color: Color {
+                            r: 0.8,
+                            g: 0.3,
+                            b: 0.3,
+                            a: 0.8,
+                        },
                     },
-                },
-                ..Default::default()
-            });
+                    ..Default::default()
+                });
 
             container(column![
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fill),
                 error_container,
-                Space::with_height(Length::Fixed(80.0)), // Space above input
+                Space::new().height(Length::Fixed(80.0)), // Space above input
             ])
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Horizontal::Center)
             .into()
         } else {
-            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            Space::new().into()
         };
 
         let content = stack(vec![
@@ -1026,6 +1095,63 @@ impl App {
         .align_y(Vertical::Center)
         .style(move |_| container::Style {
             background: Some(Background::Color(pal.background)),
+            ..Default::default()
+        })
+        .into()
+    }
+
+    fn top_bar(&self, pal: PaletteColors) -> Element<'_, Message> {
+        let clear_button = button(
+            row![
+                bootstrap::eraser()
+                    .size(14)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(pal.text)
+                    }),
+                Space::new().width(Length::Fixed(6.0)),
+                text("Clear")
+                    .size(14)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(pal.text)
+                    }),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .on_press(Message::ClearChat)
+        .padding([8, 16])
+        .style(move |_theme, status| {
+            let is_hovered = matches!(status, iced::widget::button::Status::Hovered);
+            button::Style {
+                background: Some(Background::Color(Color {
+                    a: if is_hovered { 0.2 } else { 0.15 },
+                    ..pal.surface
+                })),
+                border: Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: Color {
+                        a: if is_hovered { 0.4 } else { 0.3 },
+                        ..pal.surface
+                    },
+                },
+                text_color: pal.text,
+                ..Default::default()
+            }
+        });
+
+        container(
+            row![clear_button, Space::new().width(Length::Fill),].align_y(iced::Alignment::Center),
+        )
+        .padding([12, 20])
+        .width(Length::Fill)
+        .height(Length::Fixed(48.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(Color::TRANSPARENT)),
+            border: Border {
+                radius: 0.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
             ..Default::default()
         })
         .into()
@@ -1082,76 +1208,32 @@ impl App {
 
     /// Creates an animated typing indicator for AI responses.
     fn typing_indicator(&self, pal: PaletteColors) -> Element<'_, Message> {
-        // Calculate animation phase based on tick for smooth animation
-        let time = self.bg_state.tick;
-        let dot_size = 8.0;
-        let spacing = 6.0;
-
-        // Create 3 pulsing dots with phase offset
-        let dots = row![
-            container(Space::new(Length::Fixed(dot_size), Length::Fixed(dot_size))).style(
-                move |_| {
-                    let phase = (time * 3.0).sin() * 0.5 + 0.5;
-                    container::Style {
-                        background: Some(Background::Color(Color {
-                            a: 0.3 + phase * 0.7,
-                            ..pal.accent
-                        })),
-                        border: Border {
-                            radius: (dot_size / 2.0).into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }
-            ),
-            container(Space::new(Length::Fixed(dot_size), Length::Fixed(dot_size))).style(
-                move |_| {
-                    let phase = ((time * 3.0) - 0.5).sin() * 0.5 + 0.5;
-                    container::Style {
-                        background: Some(Background::Color(Color {
-                            a: 0.3 + phase * 0.7,
-                            ..pal.accent
-                        })),
-                        border: Border {
-                            radius: (dot_size / 2.0).into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }
-            ),
-            container(Space::new(Length::Fixed(dot_size), Length::Fixed(dot_size))).style(
-                move |_| {
-                    let phase = ((time * 3.0) - 1.0).sin() * 0.5 + 0.5;
-                    container::Style {
-                        background: Some(Background::Color(Color {
-                            a: 0.3 + phase * 0.7,
-                            ..pal.accent
-                        })),
-                        border: Border {
-                            radius: (dot_size / 2.0).into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }
-            ),
-        ]
-        .spacing(spacing)
-        .align_y(iced::Alignment::Center);
+        // Create a loading spinner with orbital animation
+        let spinner = Canvas::new(LoadingSpinner::new(SpinnerState {
+            tick: self.spinner_state.tick,
+            spinner_type: SpinnerType::Orbital,
+            size: 12.0,
+            color: pal.accent,
+            accent_color: Color {
+                r: pal.accent.r * 0.7,
+                g: pal.accent.g * 0.7,
+                b: pal.accent.b * 0.7,
+                a: pal.accent.a,
+            },
+        }))
+        .width(Length::Fixed(24.0))
+        .height(Length::Fixed(24.0));
 
         // Wrap in a bubble-like container
         let indicator_content = container(
             row![
-                text(Bootstrap::Robot.to_string())
-                    .font(iced_fonts::BOOTSTRAP_FONT)
+                spinner,
+                Space::new().width(Length::Fixed(8.0)),
+                text("is thinking...")
                     .size(14)
                     .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.accent)
+                        color: Some(pal.muted)
                     }),
-                Space::with_width(Length::Fixed(12.0)),
-                dots,
             ]
             .align_y(iced::Alignment::Center),
         )
@@ -1159,14 +1241,14 @@ impl App {
         .style(move |_| container::Style {
             background: Some(Background::Color(Color {
                 a: 0.08,
-                ..pal.accent
+                ..pal.surface
             })),
             border: Border {
                 radius: 16.0.into(),
                 width: 1.0,
                 color: Color {
                     a: 0.15,
-                    ..pal.accent
+                    ..pal.surface
                 },
             },
             ..Default::default()
@@ -1226,8 +1308,7 @@ impl App {
                 // Render cached markdown
                 markdown::view(
                     items,
-                    markdown::Settings::default(),
-                    markdown::Style::from_palette(iced::Theme::TokyoNightStorm.palette()),
+                    markdown::Settings::with_style(markdown::Style::from_palette(iced::Theme::TokyoNightStorm.palette())),
                 )
                 .map(Message::LinkClicked)
                 .into()
@@ -1277,7 +1358,6 @@ impl App {
                         width: 0.0,
                         radius: 0.0.into(),
                     },
-                    icon: text_color,
                     placeholder: pal.muted,
                     value: text_color,
                     selection: Color {
@@ -1330,27 +1410,36 @@ impl App {
         // Copy button for the message content
         let content_to_copy = message.content.clone();
         let copy_button = button(
-            text(Bootstrap::Clipboard.to_string())
+            bootstrap::clipboard()
                 .size(12)
-                .font(iced_fonts::BOOTSTRAP_FONT)
                 .style(move |_| iced::widget::text::Style {
-                    color: Some(Color { a: fade_opacity * 0.6, ..pal.muted })
-                })
+                    color: Some(Color {
+                        a: fade_opacity * 0.6,
+                        ..pal.muted
+                    }),
+                }),
         )
         .on_press(Message::CopyToClipboard(content_to_copy))
         .padding([2, 4])
         .style(move |_theme, status| {
-            let hover_opacity = if matches!(status, button::Status::Hovered) { 1.0 } else { 0.6 };
+            let hover_opacity = if matches!(status, button::Status::Hovered) {
+                1.0
+            } else {
+                0.6
+            };
             button::Style {
                 background: Some(Background::Color(Color::TRANSPARENT)),
                 border: Border::default(),
-                text_color: Color { a: fade_opacity * hover_opacity, ..pal.muted },
+                text_color: Color {
+                    a: fade_opacity * hover_opacity,
+                    ..pal.muted
+                },
                 ..Default::default()
             }
         });
 
         // Bottom row with timestamp and copy button
-        let bottom_row = row![timestamp, Space::with_width(Length::Fill), copy_button]
+        let bottom_row = row![timestamp, Space::new().width(Length::Fill), copy_button]
             .align_y(iced::Alignment::Center);
 
         let bubble = container(column![content_widget, bottom_row].spacing(6))
@@ -1384,7 +1473,7 @@ impl App {
             let base_style_fn = user_bubble_style(pal);
             // Apply dynamic modification to the user style
             let styled_bubble = bubble.style(move |t| dynamic_style(base_style_fn(t)));
-            row![Space::with_width(Length::Fill), styled_bubble].into()
+            row![Space::new().width(Length::Fill), styled_bubble].into()
         } else if is_tool {
             // Terminal-style tool bubble with collapsible content
             return self.terminal_style_tool_bubble(msg_idx, message, &key, pal, fade_opacity);
@@ -1394,7 +1483,7 @@ impl App {
         } else {
             let base_style_fn = ai_bubble_style(pal, false); // Pass false since we handle opacity manually here
             let styled_bubble = bubble.style(move |t| dynamic_style(base_style_fn(t)));
-            row![styled_bubble, Space::with_width(Length::Fill)].into()
+            row![styled_bubble, Space::new().width(Length::Fill)].into()
         }
     }
 
@@ -1437,23 +1526,50 @@ impl App {
         // Content format: "{icon} {ToolName}{extra_info} {status} {result}"
         // e.g.: "◇ List ✓ 24 items" or "○ Shell ✓ exit 0"
         // Use starts_with after the icon to avoid false matches with file content
-        let tool_type = if content.starts_with("○ Shell") || content.starts_with("◆ Shell") || content.contains("execute_bash") {
+        let tool_type = if content.starts_with("○ Shell")
+            || content.starts_with("◆ Shell")
+            || content.contains("execute_bash")
+        {
             ToolType::Shell
-        } else if content.starts_with("□ Edit") || content.starts_with("◆ Edit") || content.contains("edit_file") {
+        } else if content.starts_with("□ Edit")
+            || content.starts_with("◆ Edit")
+            || content.contains("edit_file")
+        {
             ToolType::EditFile
-        } else if content.starts_with("□ Write") || content.starts_with("◆ Write") || content.contains("write_file") {
+        } else if content.starts_with("□ Write")
+            || content.starts_with("◆ Write")
+            || content.contains("write_file")
+        {
             ToolType::WriteFile
-        } else if content.starts_with("○ Read") || content.starts_with("◆ Read") || content.contains("read_file") {
+        } else if content.starts_with("○ Read")
+            || content.starts_with("◆ Read")
+            || content.contains("read_file")
+        {
             ToolType::ReadFile
-        } else if content.starts_with("◇ List") || content.starts_with("◆ List") || content.contains("list_directory") {
+        } else if content.starts_with("◇ List")
+            || content.starts_with("◆ List")
+            || content.contains("list_directory")
+        {
             ToolType::ListDirectory
-        } else if content.starts_with("○ Search") || content.starts_with("◆ Search") || (content.contains("Search") && !content.contains("Web")) {
+        } else if content.starts_with("○ Search")
+            || content.starts_with("◆ Search")
+            || (content.contains("Search") && !content.contains("Web"))
+        {
             ToolType::Search
-        } else if content.starts_with("⭕ Web") || content.starts_with("◆ Web") || content.contains("web_search") {
+        } else if content.starts_with("⭕ Web")
+            || content.starts_with("◆ Web")
+            || content.contains("web_search")
+        {
             ToolType::WebSearch
-        } else if content.starts_with("◊ MCP") || content.starts_with("◆ MCP") || content.contains("mcp_call") {
+        } else if content.starts_with("◊ MCP")
+            || content.starts_with("◆ MCP")
+            || content.contains("mcp_call")
+        {
             ToolType::Mcp
-        } else if content.starts_with("○ Vision") || content.starts_with("◆ Vision") || content.contains("visioneer") {
+        } else if content.starts_with("○ Vision")
+            || content.starts_with("◆ Vision")
+            || content.contains("visioneer")
+        {
             ToolType::Vision
         } else {
             ToolType::Other
@@ -1469,78 +1585,229 @@ impl App {
         let has_error = content.contains('✗');
 
         // Tool-specific theming: (accent_color, header_bg, content_bg, icon, label)
-        let (bubble_accent_color, header_bg_color, terminal_bg_color, tool_icon, header_label) = match tool_type {
-            ToolType::Shell => (
-                Color { r: 0.6, g: 0.5, b: 0.9, a: fade_opacity }, // Purple
-                Color { r: 0.12, g: 0.10, b: 0.18, a: fade_opacity * 0.98 },
-                Color { r: 0.06, g: 0.05, b: 0.10, a: fade_opacity * 0.98 },
-                Bootstrap::Terminal,
-                "Terminal",
-            ),
-            ToolType::ReadFile => (
-                Color { r: 0.4, g: 0.7, b: 1.0, a: fade_opacity }, // Blue
-                Color { r: 0.08, g: 0.12, b: 0.18, a: fade_opacity * 0.98 },
-                Color { r: 0.04, g: 0.08, b: 0.12, a: fade_opacity * 0.98 },
-                Bootstrap::FileEarmarkText,
-                "Read File",
-            ),
-            ToolType::WriteFile => (
-                Color { r: 0.4, g: 0.9, b: 0.5, a: fade_opacity }, // Green
-                Color { r: 0.08, g: 0.15, b: 0.10, a: fade_opacity * 0.98 },
-                Color { r: 0.04, g: 0.10, b: 0.06, a: fade_opacity * 0.98 },
-                Bootstrap::FileEarmarkPlus,
-                "Write File",
-            ),
-            ToolType::EditFile => (
-                Color { r: 1.0, g: 0.7, b: 0.3, a: fade_opacity }, // Orange
-                Color { r: 0.18, g: 0.12, b: 0.06, a: fade_opacity * 0.98 },
-                Color { r: 0.12, g: 0.08, b: 0.04, a: fade_opacity * 0.98 },
-                Bootstrap::FileEarmarkDiff,
-                "Edit File",
-            ),
-            ToolType::ListDirectory => (
-                Color { r: 0.3, g: 0.8, b: 0.8, a: fade_opacity }, // Teal
-                Color { r: 0.06, g: 0.14, b: 0.14, a: fade_opacity * 0.98 },
-                Color { r: 0.04, g: 0.10, b: 0.10, a: fade_opacity * 0.98 },
-                Bootstrap::FolderFill,
-                "List Directory",
-            ),
-            ToolType::Search => (
-                Color { r: 0.5, g: 0.8, b: 1.0, a: fade_opacity }, // Cyan
-                Color { r: 0.08, g: 0.12, b: 0.16, a: fade_opacity * 0.98 },
-                Color { r: 0.04, g: 0.08, b: 0.12, a: fade_opacity * 0.98 },
-                Bootstrap::Search,
-                "Search",
-            ),
-            ToolType::WebSearch => (
-                Color { r: 0.4, g: 0.6, b: 1.0, a: fade_opacity }, // Deep Blue
-                Color { r: 0.06, g: 0.08, b: 0.16, a: fade_opacity * 0.98 },
-                Color { r: 0.04, g: 0.06, b: 0.12, a: fade_opacity * 0.98 },
-                Bootstrap::Globe,
-                "Web Search",
-            ),
-            ToolType::Mcp => (
-                Color { r: 0.8, g: 0.5, b: 0.9, a: fade_opacity }, // Magenta
-                Color { r: 0.14, g: 0.08, b: 0.16, a: fade_opacity * 0.98 },
-                Color { r: 0.10, g: 0.05, b: 0.12, a: fade_opacity * 0.98 },
-                Bootstrap::PlugFill,
-                "MCP Tool",
-            ),
-            ToolType::Vision => (
-                Color { r: 0.9, g: 0.6, b: 0.8, a: fade_opacity }, // Pink
-                Color { r: 0.16, g: 0.10, b: 0.14, a: fade_opacity * 0.98 },
-                Color { r: 0.12, g: 0.06, b: 0.10, a: fade_opacity * 0.98 },
-                Bootstrap::EyeFill,
-                "Vision",
-            ),
-            ToolType::Other => (
-                Color { r: 0.6, g: 0.6, b: 0.6, a: fade_opacity }, // Gray
-                Color { r: 0.12, g: 0.12, b: 0.12, a: fade_opacity * 0.98 },
-                Color { r: 0.08, g: 0.08, b: 0.08, a: fade_opacity * 0.98 },
-                Bootstrap::GearFill,
-                "Tool",
-            ),
-        };
+        let (bubble_accent_color, header_bg_color, terminal_bg_color, tool_icon, header_label) =
+            match tool_type {
+                ToolType::Shell => (
+                    Color {
+                        r: 0.6,
+                        g: 0.5,
+                        b: 0.9,
+                        a: fade_opacity,
+                    }, // Purple
+                    Color {
+                        r: 0.12,
+                        g: 0.10,
+                        b: 0.18,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.06,
+                        g: 0.05,
+                        b: 0.10,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::terminal(),
+                    "Terminal",
+                ),
+                ToolType::ReadFile => (
+                    Color {
+                        r: 0.4,
+                        g: 0.7,
+                        b: 1.0,
+                        a: fade_opacity,
+                    }, // Blue
+                    Color {
+                        r: 0.08,
+                        g: 0.12,
+                        b: 0.18,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.04,
+                        g: 0.08,
+                        b: 0.12,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::file_earmark_text(),
+                    "Read File",
+                ),
+                ToolType::WriteFile => (
+                    Color {
+                        r: 0.4,
+                        g: 0.9,
+                        b: 0.5,
+                        a: fade_opacity,
+                    }, // Green
+                    Color {
+                        r: 0.08,
+                        g: 0.15,
+                        b: 0.10,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.04,
+                        g: 0.10,
+                        b: 0.06,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::file_earmark_plus(),
+                    "Write File",
+                ),
+                ToolType::EditFile => (
+                    Color {
+                        r: 1.0,
+                        g: 0.7,
+                        b: 0.3,
+                        a: fade_opacity,
+                    }, // Orange
+                    Color {
+                        r: 0.18,
+                        g: 0.12,
+                        b: 0.06,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.12,
+                        g: 0.08,
+                        b: 0.04,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::file_earmark_diff(),
+                    "Edit File",
+                ),
+                ToolType::ListDirectory => (
+                    Color {
+                        r: 0.3,
+                        g: 0.8,
+                        b: 0.8,
+                        a: fade_opacity,
+                    }, // Teal
+                    Color {
+                        r: 0.06,
+                        g: 0.14,
+                        b: 0.14,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.04,
+                        g: 0.10,
+                        b: 0.10,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::folder_fill(),
+                    "List Directory",
+                ),
+                ToolType::Search => (
+                    Color {
+                        r: 0.5,
+                        g: 0.8,
+                        b: 1.0,
+                        a: fade_opacity,
+                    }, // Cyan
+                    Color {
+                        r: 0.08,
+                        g: 0.12,
+                        b: 0.16,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.04,
+                        g: 0.08,
+                        b: 0.12,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::search(),
+                    "Search",
+                ),
+                ToolType::WebSearch => (
+                    Color {
+                        r: 0.4,
+                        g: 0.6,
+                        b: 1.0,
+                        a: fade_opacity,
+                    }, // Deep Blue
+                    Color {
+                        r: 0.06,
+                        g: 0.08,
+                        b: 0.16,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.04,
+                        g: 0.06,
+                        b: 0.12,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::globe(),
+                    "Web Search",
+                ),
+                ToolType::Mcp => (
+                    Color {
+                        r: 0.8,
+                        g: 0.5,
+                        b: 0.9,
+                        a: fade_opacity,
+                    }, // Magenta
+                    Color {
+                        r: 0.14,
+                        g: 0.08,
+                        b: 0.16,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.10,
+                        g: 0.05,
+                        b: 0.12,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::plug_fill(),
+                    "MCP Tool",
+                ),
+                ToolType::Vision => (
+                    Color {
+                        r: 0.9,
+                        g: 0.6,
+                        b: 0.8,
+                        a: fade_opacity,
+                    }, // Pink
+                    Color {
+                        r: 0.16,
+                        g: 0.10,
+                        b: 0.14,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.12,
+                        g: 0.06,
+                        b: 0.10,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::eye_fill(),
+                    "Vision",
+                ),
+                ToolType::Other => (
+                    Color {
+                        r: 0.6,
+                        g: 0.6,
+                        b: 0.6,
+                        a: fade_opacity,
+                    }, // Gray
+                    Color {
+                        r: 0.12,
+                        g: 0.12,
+                        b: 0.12,
+                        a: fade_opacity * 0.98,
+                    },
+                    Color {
+                        r: 0.08,
+                        g: 0.08,
+                        b: 0.08,
+                        a: fade_opacity * 0.98,
+                    },
+                    bootstrap::gear_fill(),
+                    "Tool",
+                ),
+            };
 
         // Extract command/argument - improved parsing
         let command_display = {
@@ -1594,26 +1861,36 @@ impl App {
 
         // Status icon using Bootstrap icons
         let status_icon = if has_checkmark {
-            Bootstrap::CheckLg
+            bootstrap::check_lg()
         } else if has_error {
-            Bootstrap::XLg
+            bootstrap::x_lg()
         } else {
-            Bootstrap::Circle
+            bootstrap::circle()
         };
 
         let status_color = if has_checkmark {
-            Color { r: 0.4, g: 1.0, b: 0.5, a: fade_opacity }
+            Color {
+                r: 0.4,
+                g: 1.0,
+                b: 0.5,
+                a: fade_opacity,
+            }
         } else if has_error {
-            Color { r: 1.0, g: 0.4, b: 0.4, a: fade_opacity }
+            Color {
+                r: 1.0,
+                g: 0.4,
+                b: 0.4,
+                a: fade_opacity,
+            }
         } else {
             bubble_accent_color
         };
 
         // Dropdown chevron using Bootstrap
         let chevron_icon = if is_collapsed {
-            Bootstrap::ChevronRight
+            bootstrap::chevron_right()
         } else {
-            Bootstrap::ChevronDown
+            bootstrap::chevron_down()
         };
 
         // For read file, include the result summary in the header display
@@ -1631,29 +1908,30 @@ impl App {
         // Build header row - chevron goes on the RIGHT side (after status icon)
         // ReadFile doesn't get a chevron since it's not expandable
         let mut header_row = row![
-            text(tool_icon.to_string())
+            tool_icon
                 .size(14)
-                .font(iced_fonts::BOOTSTRAP_FONT)
                 .style(move |_| iced::widget::text::Style {
                     color: Some(bubble_accent_color)
                 }),
-            Space::with_width(Length::Fixed(6.0)),
+            Space::new().width(Length::Fixed(6.0)),
             text(header_label)
                 .size(13)
                 .style(move |_| iced::widget::text::Style {
                     color: Some(bubble_accent_color)
                 }),
-            Space::with_width(Length::Fixed(8.0)),
+            Space::new().width(Length::Fixed(8.0)),
             text(header_detail)
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(move |_| iced::widget::text::Style {
-                    color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                    color: Some(Color {
+                        a: fade_opacity * 0.7,
+                        ..pal.text
+                    })
                 }),
-            Space::with_width(Length::Fill),
-            text(status_icon.to_string())
+            Space::new().width(Length::Fill),
+            status_icon
                 .size(14)
-                .font(iced_fonts::BOOTSTRAP_FONT)
                 .style(move |_| iced::widget::text::Style {
                     color: Some(status_color)
                 }),
@@ -1663,13 +1941,15 @@ impl App {
 
         // Add chevron on right side for expandable tools (not read file)
         if !is_read {
-            header_row = header_row.push(Space::with_width(Length::Fixed(8.0)));
+            header_row = header_row.push(Space::new().width(Length::Fixed(8.0)));
             header_row = header_row.push(
-                text(chevron_icon.to_string())
+                chevron_icon
                     .size(12)
-                    .font(iced_fonts::BOOTSTRAP_FONT)
                     .style(move |_| iced::widget::text::Style {
-                        color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                        color: Some(Color {
+                            a: fade_opacity * 0.7,
+                            ..pal.text
+                        }),
                     }),
             );
         }
@@ -1700,7 +1980,11 @@ impl App {
                 .style(move |_theme, _status| button::Style {
                     background: Some(Background::Color(header_bg_color)),
                     border: Border {
-                        radius: if is_collapsed { 8.0.into() } else { iced::border::Radius::new(0.0).top(8.0) },
+                        radius: if is_collapsed {
+                            8.0.into()
+                        } else {
+                            iced::border::Radius::new(0.0).top(8.0)
+                        },
                         width: 1.0,
                         color: Color {
                             a: bubble_accent_color.a * 0.5,
@@ -1715,7 +1999,7 @@ impl App {
         // Terminal content area (only shown when not collapsed, and never for read file)
         // Uses expand_progress for smooth animation (0.0 = collapsed, 1.0 = expanded)
         let terminal_content: Element<'_, Message> = if is_read || expand_progress < 0.01 {
-            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            Space::new().into()
         } else {
             // Black terminal background with command prompt
             let prompt_prefix = if is_shell { "$ " } else { "> " };
@@ -1816,22 +2100,41 @@ impl App {
                     if is_edit {
                         for line in result.lines() {
                             let line_color = if line.starts_with('+') || line.starts_with("+ ") {
-                                Color { r: 0.4, g: 1.0, b: 0.5, a: content_opacity } // Green for additions
+                                Color {
+                                    r: 0.4,
+                                    g: 1.0,
+                                    b: 0.5,
+                                    a: content_opacity,
+                                } // Green for additions
                             } else if line.starts_with('-') || line.starts_with("- ") {
-                                Color { r: 1.0, g: 0.4, b: 0.4, a: content_opacity } // Red for deletions
+                                Color {
+                                    r: 1.0,
+                                    g: 0.4,
+                                    b: 0.4,
+                                    a: content_opacity,
+                                } // Red for deletions
                             } else if line.starts_with("@@") || line.contains("line") {
-                                Color { r: 0.6, g: 0.8, b: 1.0, a: content_opacity } // Blue for line markers
+                                Color {
+                                    r: 0.6,
+                                    g: 0.8,
+                                    b: 1.0,
+                                    a: content_opacity,
+                                } // Blue for line markers
                             } else {
-                                Color { r: 0.7, g: 0.7, b: 0.7, a: content_opacity } // Gray for context
+                                Color {
+                                    r: 0.7,
+                                    g: 0.7,
+                                    b: 0.7,
+                                    a: content_opacity,
+                                } // Gray for context
                             };
 
                             terminal_column = terminal_column.push(
-                                text(line.to_string())
-                                    .size(12)
-                                    .font(Font::MONOSPACE)
-                                    .style(move |_| iced::widget::text::Style {
+                                text(line.to_string()).size(12).font(Font::MONOSPACE).style(
+                                    move |_| iced::widget::text::Style {
                                         color: Some(line_color),
-                                    }),
+                                    },
+                                ),
                             );
                         }
                     } else {
@@ -1851,7 +2154,10 @@ impl App {
 
             // Wrap in container with tool-themed background
             // Animate background opacity
-            let animated_bg = Color { a: terminal_bg_color.a * expand_progress, ..terminal_bg_color };
+            let animated_bg = Color {
+                a: terminal_bg_color.a * expand_progress,
+                ..terminal_bg_color
+            };
             let terminal_inner = container(terminal_column)
                 .padding([10, 14])
                 .width(Length::Fill)
@@ -1860,7 +2166,10 @@ impl App {
                     border: Border {
                         radius: iced::border::Radius::new(0.0).bottom(8.0),
                         width: 1.0,
-                        color: Color { a: bubble_accent_color.a * 0.3 * expand_progress, ..bubble_accent_color },
+                        color: Color {
+                            a: bubble_accent_color.a * 0.3 * expand_progress,
+                            ..bubble_accent_color
+                        },
                     },
                     ..Default::default()
                 });
@@ -1879,12 +2188,12 @@ impl App {
             let line_height = 18.0_f32;
             let content_padding = 24.0_f32; // Top + bottom padding
             let natural_height = (line_count as f32 * line_height + content_padding).max(40.0);
-            
+
             // Cap at max scrollable height for tall content
             let max_visible_height = 200.0_f32;
             let base_height = natural_height.min(max_visible_height);
             let animated_height = base_height * expand_progress;
-            
+
             let scroll_height = if expand_progress < 0.99 {
                 // During animation, use animated height scaling to actual size
                 Length::Fixed(animated_height.max(1.0))
@@ -1937,7 +2246,7 @@ impl App {
             ..Default::default()
         });
 
-        row![bubble, Space::with_width(Length::Fill)].into()
+        row![bubble, Space::new().width(Length::Fill)].into()
     }
 
     /// Creates a collapsible thinking bubble
@@ -1953,7 +2262,10 @@ impl App {
         let is_finalized = message.thinking_duration_secs.is_some();
         // Get animation state: default to collapsed (0.0) for finalized thinking
         let spring = self.tool_animations.get(key);
-        let expand_progress = spring.map(|s| s.position).unwrap_or(if is_finalized { 0.0 } else { 1.0 });
+        let expand_progress =
+            spring
+                .map(|s| s.position)
+                .unwrap_or(if is_finalized { 0.0 } else { 1.0 });
         let is_collapsed = spring.map(|s| s.target < 0.5).unwrap_or(is_finalized);
         let key_owned = key.to_string();
 
@@ -1986,19 +2298,18 @@ impl App {
 
         // Build header row
         let mut header_row = row![
-            text(Bootstrap::Lightbulb.to_string())
+            bootstrap::lightbulb()
                 .size(14)
-                .font(iced_fonts::BOOTSTRAP_FONT)
                 .style(move |_| iced::widget::text::Style {
                     color: Some(accent_color)
                 }),
-            Space::with_width(Length::Fixed(8.0)),
+            Space::new().width(Length::Fixed(8.0)),
             text(header_text)
                 .size(13)
                 .style(move |_| iced::widget::text::Style {
                     color: Some(accent_color)
                 }),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
         ]
         .align_y(iced::Alignment::Center)
         .width(Length::Fill);
@@ -2006,16 +2317,18 @@ impl App {
         // Add chevron for finalized thinking (expandable)
         if is_finalized {
             let chevron = if is_collapsed {
-                Bootstrap::ChevronRight
+                bootstrap::chevron_right()
             } else {
-                Bootstrap::ChevronDown
+                bootstrap::chevron_down()
             };
             header_row = header_row.push(
-                text(chevron.to_string())
+                chevron
                     .size(12)
-                    .font(iced_fonts::BOOTSTRAP_FONT)
                     .style(move |_| iced::widget::text::Style {
-                        color: Some(Color { a: fade_opacity * 0.7, ..pal.text })
+                        color: Some(Color {
+                            a: fade_opacity * 0.7,
+                            ..pal.text
+                        }),
                     }),
             );
         }
@@ -2028,9 +2341,16 @@ impl App {
                 .style(move |_theme, _status| button::Style {
                     background: Some(Background::Color(header_bg)),
                     border: Border {
-                        radius: if is_collapsed { 8.0.into() } else { iced::border::Radius::new(0.0).top(8.0) },
+                        radius: if is_collapsed {
+                            8.0.into()
+                        } else {
+                            iced::border::Radius::new(0.0).top(8.0)
+                        },
                         width: 1.0,
-                        color: Color { a: accent_color.a * 0.5, ..accent_color },
+                        color: Color {
+                            a: accent_color.a * 0.5,
+                            ..accent_color
+                        },
                     },
                     text_color: pal.text,
                     ..Default::default()
@@ -2044,7 +2364,10 @@ impl App {
                     border: Border {
                         radius: 8.0.into(),
                         width: 1.0,
-                        color: Color { a: accent_color.a * 0.5, ..accent_color },
+                        color: Color {
+                            a: accent_color.a * 0.5,
+                            ..accent_color
+                        },
                     },
                     text_color: pal.text,
                     ..Default::default()
@@ -2054,7 +2377,7 @@ impl App {
         // Content area (only for expanded finalized thinking)
         // Uses expand_progress for smooth animation
         let thinking_content: Element<'_, Message> = if !is_finalized || expand_progress < 0.01 {
-            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            Space::new().into()
         } else {
             // Animate opacity with expand
             let content_opacity = fade_opacity * expand_progress;
@@ -2066,14 +2389,15 @@ impl App {
             };
 
             // Animate background opacity
-            let animated_bg = Color { a: content_bg.a * expand_progress, ..content_bg };
-            let content_inner = container(
-                text(&message.content)
-                    .size(13)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(text_color),
-                    }),
-            )
+            let animated_bg = Color {
+                a: content_bg.a * expand_progress,
+                ..content_bg
+            };
+            let content_inner = container(text(&message.content).size(13).style(move |_| {
+                iced::widget::text::Style {
+                    color: Some(text_color),
+                }
+            }))
             .padding([10, 14])
             .width(Length::Fill)
             .style(move |_| container::Style {
@@ -2081,7 +2405,10 @@ impl App {
                 border: Border {
                     radius: iced::border::Radius::new(0.0).bottom(8.0),
                     width: 1.0,
-                    color: Color { a: accent_color.a * 0.3 * expand_progress, ..accent_color },
+                    color: Color {
+                        a: accent_color.a * 0.3 * expand_progress,
+                        ..accent_color
+                    },
                 },
                 ..Default::default()
             });
@@ -2091,11 +2418,11 @@ impl App {
             let line_height = 18.0_f32;
             let content_padding = 24.0_f32;
             let natural_height = (line_count as f32 * line_height + content_padding).max(40.0);
-            
+
             let max_visible_height = 200.0_f32;
             let base_height = natural_height.min(max_visible_height);
             let animated_height = base_height * expand_progress;
-            
+
             let scroll_height = if expand_progress < 0.99 {
                 Length::Fixed(animated_height.max(1.0))
             } else if natural_height > max_visible_height {
@@ -2111,12 +2438,10 @@ impl App {
         };
 
         // Outer container
-        let bubble = container(
-            column![header, thinking_content].spacing(0),
-        )
-        .max_width(MESSAGE_MAX_WIDTH);
+        let bubble =
+            container(column![header, thinking_content].spacing(0)).max_width(MESSAGE_MAX_WIDTH);
 
-        row![bubble, Space::with_width(Length::Fill)].into()
+        row![bubble, Space::new().width(Length::Fill)].into()
     }
 
     fn input_area(&self, pal: PaletteColors) -> Element<'_, Message> {
@@ -2125,10 +2450,9 @@ impl App {
         // Use progress instead of is_open to prevent flickering during close animation
         let overlay_visible = self.menu_state.progress() > 0.01;
         let menu_button_or_space: Element<'_, Message> = if overlay_visible {
-            Space::new(
-                Length::Fixed(MENU_BUTTON_SIZE),
-                Length::Fixed(MENU_BUTTON_SIZE),
-            )
+            Space::new()
+                .width(Length::Fixed(MENU_BUTTON_SIZE))
+                .height(Length::Fixed(MENU_BUTTON_SIZE))
             .into()
         } else {
             self.menu_button(pal)
@@ -2210,14 +2534,13 @@ impl App {
 
         // Use Bootstrap Icons - gear-fill for settings, x-lg for close
         let icon_char = if is_open {
-            iced_fonts::Bootstrap::XLg
+            bootstrap::x_lg()
         } else {
-            iced_fonts::Bootstrap::GearFill
+            bootstrap::gear_fill()
         };
 
-        let icon_text = text(icon_char.to_string())
+        let icon_text = icon_char
             .size(22)
-            .font(iced_fonts::BOOTSTRAP_FONT)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
             .style(move |_| iced::widget::text::Style { color: Some(color) });
@@ -2265,7 +2588,7 @@ impl App {
         let submenu_content: Option<Element<'_, Message>> =
             if is_on_submenu || settings.is_transitioning() {
                 Some(match settings.current_page {
-                    SettingsPage::Main => Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into(),
+                    SettingsPage::Main => Space::new().into(),
                     SettingsPage::Provider => self.settings_provider_page(pal, form),
                     SettingsPage::Api => self.settings_provider_page(pal, form), // Redirect to provider
                     SettingsPage::Behavior => self.settings_behavior_page(pal, form),
@@ -2280,7 +2603,7 @@ impl App {
         let content_layout: Element<'_, Message> = if let Some(submenu) = submenu_content {
             // Submenu with slide effect using Space for offset
             let submenu_with_slide = row![
-                Space::with_width(Length::Fixed(submenu_slide)),
+                Space::new().width(Length::Fixed(submenu_slide)),
                 container(submenu).style(move |_| container::Style {
                     background: None,
                     text_color: Some(Color {
@@ -2293,7 +2616,7 @@ impl App {
 
             row![
                 main_menu,
-                Space::with_width(Length::Fixed(20.0)),
+                Space::new().width(Length::Fixed(20.0)),
                 submenu_with_slide,
             ]
             .align_y(iced::Alignment::Start)
@@ -2312,9 +2635,8 @@ impl App {
             .height(Length::Fill);
 
         // Create floating close button for the overlay (in bottom-left corner)
-        let close_icon = text(iced_fonts::Bootstrap::XLg.to_string())
+        let close_icon = bootstrap::x_lg()
             .size(22)
-            .font(iced_fonts::BOOTSTRAP_FONT)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center)
             .style(move |_| iced::widget::text::Style {
@@ -2334,17 +2656,17 @@ impl App {
 
         // Position the close button in the bottom-left corner using a column with spacing
         let close_btn_positioned = column![
-            Space::with_height(Length::Fill),
+            Space::new().height(Length::Fill),
             row![
                 container(floating_close_btn).padding(16),
-                Space::with_width(Length::Fill)
+                Space::new().width(Length::Fill)
             ]
         ];
 
         let content = if progress > 0.2 {
             styled_content.into()
         } else {
-            Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            Space::new().into()
         };
 
         // Stack: background, content, and floating close button on top
@@ -2370,7 +2692,7 @@ impl App {
 
         // Category buttons with icons
         let provider_btn = self.category_button(
-            iced_fonts::Bootstrap::Cpu,
+            bootstrap::cpu(),
             "Provider & Model",
             "AI provider and model",
             Message::SettingsNavigate(SettingsPage::Provider),
@@ -2378,7 +2700,7 @@ impl App {
         );
 
         let behavior_btn = self.category_button(
-            iced_fonts::Bootstrap::Sliders,
+            bootstrap::sliders(),
             "Behavior",
             "AI behavior settings",
             Message::SettingsNavigate(SettingsPage::Behavior),
@@ -2386,7 +2708,7 @@ impl App {
         );
 
         let appearance_btn = self.category_button(
-            iced_fonts::Bootstrap::Palette,
+            bootstrap::palette(),
             "Appearance",
             "Visual settings",
             Message::SettingsNavigate(SettingsPage::Appearance),
@@ -2399,7 +2721,7 @@ impl App {
         container(
             column![
                 header,
-                Space::with_height(Length::Fixed(16.0)),
+                Space::new().height(Length::Fixed(16.0)),
                 provider_btn,
                 behavior_btn,
                 appearance_btn,
@@ -2421,29 +2743,27 @@ impl App {
     /// Creates a category button for the main settings page.
     fn category_button(
         &self,
-        icon: iced_fonts::Bootstrap,
+        icon: iced::widget::Text<'static>,
         title: &'static str,
         subtitle: &'static str,
         on_press: Message,
         pal: PaletteColors,
     ) -> Element<'static, Message> {
-        let icon_text = text(icon.to_string())
+        let icon_text = icon
             .size(20)
-            .font(iced_fonts::BOOTSTRAP_FONT)
             .style(move |_| iced::widget::text::Style {
                 color: Some(pal.accent),
             });
 
-        let arrow = text(iced_fonts::Bootstrap::ChevronRight.to_string())
+        let arrow = bootstrap::chevron_right()
             .size(16)
-            .font(iced_fonts::BOOTSTRAP_FONT)
             .style(move |_| iced::widget::text::Style {
                 color: Some(pal.muted),
             });
 
         let content = row![
             icon_text,
-            Space::with_width(Length::Fixed(12.0)),
+            Space::new().width(Length::Fixed(12.0)),
             column![
                 text(title)
                     .size(16)
@@ -2457,7 +2777,7 @@ impl App {
                     }),
             ]
             .spacing(2),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             arrow,
         ]
         .align_y(iced::Alignment::Center)
@@ -2504,83 +2824,81 @@ impl App {
                 color: Some(pal.text),
             });
 
-        let base_content =
-            column![
-                text("Provider")
-                    .size(12)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.muted)
-                    }),
-                pick_list(
-                    form.provider_options.clone(),
-                    Some(form.provider.clone()),
-                    Message::ConfigProviderChanged
-                ),
-                Space::with_height(Length::Fixed(12.0)),
-                text("Model")
-                    .size(12)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.muted)
-                    }),
-                button(
-                    row![
-                        text(&form.model)
-                            .size(13)
-                            .style(move |_| iced::widget::text::Style {
-                                color: Some(pal.text)
-                            }),
-                        Space::with_width(Length::Fill),
-                        text(Bootstrap::ChevronRight.to_string())
-                            .font(iced_fonts::BOOTSTRAP_FONT)
-                            .size(12)
-                            .style(move |_| iced::widget::text::Style {
-                                color: Some(pal.accent)
-                            }),
-                    ]
-                    .align_y(iced::Alignment::Center)
-                )
-                .on_press(Message::OpenModelSelector)
-                .padding([10, 14])
-                .width(Length::Fill)
-                .style(move |_theme, status| {
-                    let is_hovered = matches!(status, iced::widget::button::Status::Hovered);
-                    iced::widget::button::Style {
-                        background: Some(Background::Color(Color {
-                            a: if is_hovered { 0.15 } else { 0.1 },
-                            ..pal.accent
-                        })),
-                        border: Border {
-                            radius: 8.0.into(),
-                            width: 1.0,
-                            color: Color {
-                                a: if is_hovered { 0.3 } else { 0.2 },
-                                ..pal.accent
-                            },
-                        },
-                        text_color: pal.text,
-                        ..Default::default()
-                    }
+        let base_content = column![
+            text("Provider")
+                .size(12)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(pal.muted)
                 }),
-                Space::with_height(Length::Fixed(16.0)),
-                text("API Key")
-                    .size(12)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.muted)
-                    }),
-                text_input("Enter your API key", &form.api_key)
-                    .secure(true)
-                    .on_input(Message::ConfigApiKeyChanged)
-                    .padding(8)
-                    .style(input_style(pal)),
-                Space::with_height(Length::Fixed(12.0)),
-                text("Endpoint URL")
-                    .size(12)
-                    .style(move |_| iced::widget::text::Style {
-                        color: Some(pal.muted)
-                    }),
-            ]
-            .spacing(8)
-            .width(Length::Fill);
+            pick_list(
+                form.provider_options.clone(),
+                Some(form.provider.clone()),
+                Message::ConfigProviderChanged
+            ),
+            Space::new().height(Length::Fixed(12.0)),
+            text("Model")
+                .size(12)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(pal.muted)
+                }),
+            button(
+                row![
+                    text(&form.model)
+                        .size(13)
+                        .style(move |_| iced::widget::text::Style {
+                            color: Some(pal.text)
+                        }),
+                    Space::new().width(Length::Fill),
+                    bootstrap::chevron_right()
+                        .size(12)
+                        .style(move |_| iced::widget::text::Style {
+                            color: Some(pal.accent)
+                        }),
+                ]
+                .align_y(iced::Alignment::Center)
+            )
+            .on_press(Message::OpenModelSelector)
+            .padding([10, 14])
+            .width(Length::Fill)
+            .style(move |_theme, status| {
+                let is_hovered = matches!(status, iced::widget::button::Status::Hovered);
+                iced::widget::button::Style {
+                    background: Some(Background::Color(Color {
+                        a: if is_hovered { 0.15 } else { 0.1 },
+                        ..pal.accent
+                    })),
+                    border: Border {
+                        radius: 8.0.into(),
+                        width: 1.0,
+                        color: Color {
+                            a: if is_hovered { 0.3 } else { 0.2 },
+                            ..pal.accent
+                        },
+                    },
+                    text_color: pal.text,
+                    ..Default::default()
+                }
+            }),
+            Space::new().height(Length::Fixed(16.0)),
+            text("API Key")
+                .size(12)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(pal.muted)
+                }),
+            text_input("Enter your API key", &form.api_key)
+                .secure(true)
+                .on_input(Message::ConfigApiKeyChanged)
+                .padding(8)
+                .style(input_style(pal)),
+            Space::new().height(Length::Fixed(12.0)),
+            text("Endpoint URL")
+                .size(12)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(pal.muted)
+                }),
+        ]
+        .spacing(8)
+        .width(Length::Fill);
 
         // Add endpoint UI - for z.ai show dropdown, for others show text input
         let endpoint_content: Element<'a, Message> = if form.is_zai_provider() {
@@ -2590,18 +2908,18 @@ impl App {
             if !endpoint_options.contains(&"Custom".to_string()) {
                 endpoint_options.push("Custom".to_string());
             }
-            
+
             let endpoint_selector = pick_list(
                 endpoint_options,
                 Some(form.endpoint_name.clone()),
-                Message::ConfigEndpointChanged
+                Message::ConfigEndpointChanged,
             );
 
             // Show text input only when Custom is selected
             if form.endpoint_name == "Custom" {
                 column![
                     endpoint_selector,
-                    Space::with_height(Length::Fixed(8.0)),
+                    Space::new().height(Length::Fixed(8.0)),
                     text("Custom URL")
                         .size(11)
                         .style(move |_| iced::widget::text::Style {
@@ -2618,7 +2936,7 @@ impl App {
                 // Show selected endpoint URL as read-only info
                 column![
                     endpoint_selector,
-                    Space::with_height(Length::Fixed(4.0)),
+                    Space::new().height(Length::Fixed(4.0)),
                     text(&form.api_url)
                         .size(11)
                         .style(move |_| iced::widget::text::Style {
@@ -2641,7 +2959,7 @@ impl App {
             column![
                 base_content,
                 endpoint_content,
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fill),
             ]
             .spacing(8)
             .width(Length::Fill),
@@ -2678,10 +2996,10 @@ impl App {
 
         column![
             header,
-            Space::with_height(Length::Fixed(12.0)),
+            Space::new().height(Length::Fixed(12.0)),
             content,
-            Space::with_height(Length::Fixed(12.0)),
-            row![save_btn, Space::with_width(Length::Fixed(12.0)), status]
+            Space::new().height(Length::Fixed(12.0)),
+            row![save_btn, Space::new().width(Length::Fixed(12.0)), status]
                 .align_y(iced::Alignment::Center),
         ]
         .spacing(4)
@@ -2713,7 +3031,7 @@ impl App {
                     .on_input(Message::ConfigSystemPromptChanged)
                     .padding(8)
                     .style(input_style(pal)),
-                Space::with_height(Length::Fixed(12.0)),
+                Space::new().height(Length::Fixed(12.0)),
                 row![
                     column![
                         text(format!("Temperature: {:.1}", form.temperature))
@@ -2743,21 +3061,21 @@ impl App {
                     .width(Length::Fixed(80.0))
                 ]
                 .spacing(16),
-                Space::with_height(Length::Fixed(12.0)),
+                Space::new().height(Length::Fixed(12.0)),
                 row![
                     text("Enable Streaming")
                         .size(14)
                         .style(move |_| iced::widget::text::Style {
                             color: Some(pal.text)
                         }),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     iced::widget::toggler(form.streaming_enabled)
                         .on_toggle(Message::ConfigStreamingToggled)
                         .width(Length::Shrink)
                 ]
                 .spacing(12)
                 .align_y(iced::Alignment::Center),
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fill),
             ]
             .spacing(8)
             .width(Length::Fill),
@@ -2794,10 +3112,10 @@ impl App {
 
         column![
             header,
-            Space::with_height(Length::Fixed(12.0)),
+            Space::new().height(Length::Fixed(12.0)),
             content,
-            Space::with_height(Length::Fixed(12.0)),
-            row![save_btn, Space::with_width(Length::Fixed(12.0)), status]
+            Space::new().height(Length::Fixed(12.0)),
+            row![save_btn, Space::new().width(Length::Fixed(12.0)), status]
                 .align_y(iced::Alignment::Center),
         ]
         .spacing(4)
@@ -2825,7 +3143,7 @@ impl App {
                     .style(move |_| iced::widget::text::Style {
                         color: Some(pal.muted)
                     }),
-                Space::with_height(Length::Fixed(12.0)),
+                Space::new().height(Length::Fixed(12.0)),
                 row![
                     column![
                         text("Living Background").size(14).style(move |_| {
@@ -2839,14 +3157,14 @@ impl App {
                                 color: Some(pal.muted)
                             }),
                     ],
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     iced::widget::toggler(form.living_background_enabled)
                         .on_toggle(Message::ConfigLivingBackgroundToggled)
                         .width(Length::Shrink)
                 ]
                 .spacing(12)
                 .align_y(iced::Alignment::Center),
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fill),
             ]
             .spacing(8)
             .width(Length::Fill),
@@ -2883,10 +3201,10 @@ impl App {
 
         column![
             header,
-            Space::with_height(Length::Fixed(12.0)),
+            Space::new().height(Length::Fixed(12.0)),
             content,
-            Space::with_height(Length::Fixed(12.0)),
-            row![save_btn, Space::with_width(Length::Fixed(12.0)), status]
+            Space::new().height(Length::Fixed(12.0)),
+            row![save_btn, Space::new().width(Length::Fixed(12.0)), status]
                 .align_y(iced::Alignment::Center),
         ]
         .spacing(4)
@@ -2904,25 +3222,32 @@ impl App {
             });
 
         let content_items: Element<'_, Message> = if self.models_loading {
-            // Show loading spinner
+            // Show loading spinner with custom animation
+            let spinner = Canvas::new(LoadingSpinner::new(SpinnerState {
+                tick: self.spinner_state.tick,
+                spinner_type: SpinnerType::Ring,
+                size: 20.0,
+                color: pal.accent,
+                accent_color: Color {
+                    r: pal.accent.r * 0.5,
+                    g: pal.accent.g * 0.5,
+                    b: pal.accent.b * 0.5,
+                    a: pal.accent.a,
+                },
+            }))
+            .width(Length::Fixed(40.0))
+            .height(Length::Fixed(40.0));
+
             column![
-                Space::with_height(Length::Fixed(40.0)),
-                row![
-                    text(Bootstrap::ArrowRepeat.to_string())
-                        .font(iced_fonts::BOOTSTRAP_FONT)
-                        .size(16)
-                        .style(move |_| iced::widget::text::Style {
-                            color: Some(pal.muted)
-                        }),
-                    Space::with_width(Length::Fixed(8.0)),
-                    text("Fetching models...")
-                        .size(16)
-                        .style(move |_| iced::widget::text::Style {
-                            color: Some(pal.muted)
-                        }),
-                ]
-                .align_y(iced::Alignment::Center),
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fixed(40.0)),
+                spinner,
+                Space::new().height(Length::Fixed(16.0)),
+                text("Fetching models...")
+                    .size(16)
+                    .style(move |_| iced::widget::text::Style {
+                        color: Some(pal.muted)
+                    }),
+                Space::new().height(Length::Fill),
             ]
             .align_x(iced::Alignment::Center)
             .width(Length::Fill)
@@ -2930,13 +3255,13 @@ impl App {
         } else if self.model_list.is_empty() {
             // No models available
             column![
-                Space::with_height(Length::Fixed(40.0)),
+                Space::new().height(Length::Fixed(40.0)),
                 text("No models available")
                     .size(14)
                     .style(move |_| iced::widget::text::Style {
                         color: Some(pal.muted)
                     }),
-                Space::with_height(Length::Fill),
+                Space::new().height(Length::Fill),
             ]
             .align_x(iced::Alignment::Center)
             .width(Length::Fill)
@@ -2950,21 +3275,16 @@ impl App {
                 let is_selected = model == &self.config_form.model;
                 let model_btn = button(
                     row![
-                        text(if is_selected {
-                            Bootstrap::CheckLg.to_string()
-                        } else {
-                            " ".to_string()
-                        })
-                        .font(iced_fonts::BOOTSTRAP_FONT)
-                        .size(14)
-                        .style(move |_| iced::widget::text::Style {
-                            color: Some(if is_selected {
-                                pal.accent
-                            } else {
-                                Color::TRANSPARENT
-                            })
-                        }),
-                        Space::with_width(Length::Fixed(8.0)),
+                        bootstrap::check_lg()
+                            .size(14)
+                            .style(move |_| iced::widget::text::Style {
+                                color: Some(if is_selected {
+                                    pal.accent
+                                } else {
+                                    Color::TRANSPARENT
+                                })
+                            }),
+                        Space::new().width(Length::Fixed(8.0)),
                         text(model_display)
                             .size(13)
                             .style(move |_| iced::widget::text::Style {
@@ -3028,7 +3348,7 @@ impl App {
                 ..Default::default()
             });
 
-        column![header, Space::with_height(Length::Fixed(12.0)), content,]
+        column![header, Space::new().height(Length::Fixed(12.0)), content,]
             .spacing(4)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -3037,9 +3357,14 @@ impl App {
 }
 
 fn main() -> iced::Result {
-    iced::application("Arula Desktop", App::update, App::view)
+    fn get_theme(_: &App) -> iced::Theme {
+        app_theme()
+    }
+    
+    iced::application(App::init, App::update, App::view)
+        .title("Arula Desktop")
         .subscription(App::subscription)
-        .theme(|_| app_theme())
+        .theme(get_theme)
         .font(iced_fonts::BOOTSTRAP_FONT_BYTES)
-        .run_with(App::init)
+        .run()
 }

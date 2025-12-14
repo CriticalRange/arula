@@ -12,6 +12,7 @@ pub fn app_theme() -> Theme {
             primary: p.accent,
             success: p.success,
             danger: p.danger,
+            warning: p.accent_soft, // Use accent_soft as warning color
         },
     )
 }

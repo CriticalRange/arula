@@ -438,7 +438,10 @@ impl AgentClient {
                 // Only check if there are no explicit tool_calls in the response
                 // Skip XML extraction for Anthropic-compatible endpoints (they use structured tool_use)
                 let is_anthropic = api_client.endpoint.contains("/api/anthropic");
-                if response.tool_calls.is_none() && response.response.contains("<arg_key>") && !is_anthropic {
+                if response.tool_calls.is_none()
+                    && response.response.contains("<arg_key>")
+                    && !is_anthropic
+                {
                     use crate::api::xml_toolcall::extract_tool_call_from_xml;
                     if let Some(xml_tool_call) = extract_tool_call_from_xml(&response.response) {
                         if let Ok(tool_call) =

@@ -248,12 +248,19 @@ impl SessionManager {
                 .iter()
                 .filter_map(|entry| {
                     let name = entry.get("name")?.as_str()?;
-                    let file_type = entry.get("file_type").and_then(|t| t.as_str()).unwrap_or("file");
-                    let icon = if file_type == "directory" { "📁" } else { "📄" };
+                    let file_type = entry
+                        .get("file_type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("file");
+                    let icon = if file_type == "directory" {
+                        "📁"
+                    } else {
+                        "📄"
+                    };
                     Some(format!("{} {}", icon, name))
                 })
                 .collect();
-            
+
             if file_list.is_empty() {
                 return format!("{} items found", count);
             } else {

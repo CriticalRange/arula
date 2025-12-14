@@ -9,7 +9,7 @@ pub fn input_style(
     move |_, status| {
         let is_focused = matches!(
             status,
-            text_input::Status::Focused | text_input::Status::Hovered
+            text_input::Status::Focused { .. } | text_input::Status::Hovered
         );
         let border_color = if is_focused {
             palette.accent

@@ -6,9 +6,9 @@
 use crate::api::agent_client::AgentClient;
 use crate::utils::config::Config;
 use anyhow::Result;
+use std::fmt::Write;
 use std::fs;
 use std::path::Path;
-use std::fmt::Write;
 
 pub mod example;
 pub mod fragments;
@@ -29,14 +29,17 @@ pub struct ProjectManifestSystem {
 
 impl ProjectManifestSystem {
     pub fn new(agent_client: AgentClient, config: Config) -> Self {
-        Self { agent_client, config }
+        Self {
+            agent_client,
+            config,
+        }
     }
 
     /// Create or update PROJECT.manifest for quick AI understanding
     pub async fn create_or_update_manifest(
         &self,
         project_path: &str,
-        project_description: Option<&str>
+        project_description: Option<&str>,
     ) -> Result<ProjectManifest> {
         // Check if manifest already exists
         let manifest_path = Path::new(project_path).join("PROJECT.manifest");
@@ -48,7 +51,8 @@ impl ProjectManifestSystem {
 
             // Update it with new understanding
             manifest.touch();
-            self.enhance_manifest(&mut manifest, project_path, project_description).await?;
+            self.enhance_manifest(&mut manifest, project_path, project_description)
+                .await?;
 
             // Save updated manifest
             self.save_manifest(&manifest, &manifest_path)?;
@@ -125,7 +129,7 @@ impl ProjectManifestSystem {
         &self,
         manifest: &mut ProjectManifest,
         project_path: &str,
-        project_description: Option<&str>
+        project_description: Option<&str>,
     ) -> Result<()> {
         let pipeline = ProjectLearningPipeline::new(self.agent_client.clone());
 
@@ -134,14 +138,16 @@ impl ProjectManifestSystem {
 
         // Update manifest with new information
         if !current_state.existing_code.is_empty() {
-            manifest.structure.key_files = current_state.existing_code
+            manifest.structure.key_files = current_state
+                .existing_code
                 .iter()
                 .map(|f| (f.clone(), "Detected file".to_string()))
                 .collect();
         }
 
         if !current_state.dependencies.is_empty() {
-            manifest.dependencies.external_libraries = current_state.dependencies
+            manifest.dependencies.external_libraries = current_state
+                .dependencies
                 .iter()
                 .map(|d| (d.clone(), "Detected dependency".to_string()))
                 .collect();
@@ -166,13 +172,12 @@ impl ProjectManifestSystem {
             } else if line.starts_with("purpose: ") {
                 manifest.essence.purpose = line.split(':').nth(1).unwrap_or("").trim().to_string();
             } else if line.starts_with("architecture: ") {
-                manifest.essence.architecture = line.split(':').nth(1).unwrap_or("").trim().to_string();
+                manifest.essence.architecture =
+                    line.split(':').nth(1).unwrap_or("").trim().to_string();
             } else if line.starts_with("key_technologies: ") {
                 let tech_str = line.split(':').nth(1).unwrap_or("");
-                manifest.essence.key_technologies = tech_str
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect();
+                manifest.essence.key_technologies =
+                    tech_str.split(',').map(|s| s.trim().to_string()).collect();
             }
         }
 
@@ -188,7 +193,10 @@ impl ProjectManifestSystem {
     }
 
     /// Generate analysis report from project understanding
-    pub fn generate_analysis_report(&self, understanding: &ProjectUnderstanding) -> Result<AnalysisReport> {
+    pub fn generate_analysis_report(
+        &self,
+        understanding: &ProjectUnderstanding,
+    ) -> Result<AnalysisReport> {
         let generator = ManifestGenerator::new();
         generator.generate(understanding)
     }
@@ -197,14 +205,16 @@ impl ProjectManifestSystem {
     pub async fn learn_about_project(
         &self,
         initial_understanding: &str,
-        project_path: &str
+        project_path: &str,
     ) -> Result<ProjectUnderstanding> {
         let pipeline = ProjectLearningPipeline::new(self.agent_client.clone());
 
         // Execute learning pipeline steps
         let context = pipeline.learn_context(initial_understanding).await?;
         let architecture = pipeline.discover_architecture(&context).await?;
-        let requirements = pipeline.identify_requirements(&context, &architecture).await?;
+        let requirements = pipeline
+            .identify_requirements(&context, &architecture)
+            .await?;
         let current_state = pipeline.assess_current_state(project_path).await?;
 
         // Assemble project understanding
@@ -240,7 +250,11 @@ impl ProjectManifestSystem {
         writeln!(output, "# ESSENCE (TL;DR for AI)")?;
         writeln!(output, "purpose: {}", manifest.essence.purpose)?;
         writeln!(output, "architecture: {}", manifest.essence.architecture)?;
-        writeln!(output, "key_technologies: {}", manifest.essence.key_technologies.join(", "))?;
+        writeln!(
+            output,
+            "key_technologies: {}",
+            manifest.essence.key_technologies.join(", ")
+        )?;
         writeln!(output)?;
 
         Ok(output)

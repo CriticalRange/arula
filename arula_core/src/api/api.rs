@@ -493,7 +493,7 @@ impl ApiClient {
             AIProvider::ZAiCoding => {
                 // Check if using Anthropic-compatible endpoint
                 let is_anthropic_endpoint = self.endpoint.contains("/api/anthropic");
-                
+
                 if is_anthropic_endpoint {
                     // Use Anthropic Messages API format
                     // Extract system message
@@ -506,60 +506,55 @@ impl ApiClient {
                     let anthropic_messages: Vec<Value> = messages
                         .into_iter()
                         .filter(|msg| msg.role != "system")
-                        .filter_map(|msg| {
-                            match msg.role.as_str() {
-                                "user" => {
-                                    Some(json!({
-                                        "role": "user",
-                                        "content": msg.content.clone().unwrap_or_default()
-                                    }))
-                                }
-                                "assistant" => {
-                                    let mut content_blocks: Vec<Value> = Vec::new();
-                                    
-                                    if let Some(text) = &msg.content {
-                                        if !text.is_empty() {
-                                            content_blocks.push(json!({
-                                                "type": "text",
-                                                "text": text
-                                            }));
-                                        }
+                        .filter_map(|msg| match msg.role.as_str() {
+                            "user" => Some(json!({
+                                "role": "user",
+                                "content": msg.content.clone().unwrap_or_default()
+                            })),
+                            "assistant" => {
+                                let mut content_blocks: Vec<Value> = Vec::new();
+
+                                if let Some(text) = &msg.content {
+                                    if !text.is_empty() {
+                                        content_blocks.push(json!({
+                                            "type": "text",
+                                            "text": text
+                                        }));
                                     }
-                                    
-                                    if let Some(tool_calls) = &msg.tool_calls {
-                                        for tc in tool_calls {
-                                            let input: Value = serde_json::from_str(&tc.function.arguments)
+                                }
+
+                                if let Some(tool_calls) = &msg.tool_calls {
+                                    for tc in tool_calls {
+                                        let input: Value =
+                                            serde_json::from_str(&tc.function.arguments)
                                                 .unwrap_or(json!({}));
-                                            content_blocks.push(json!({
-                                                "type": "tool_use",
-                                                "id": tc.id,
-                                                "name": tc.function.name,
-                                                "input": input
-                                            }));
-                                        }
-                                    }
-                                    
-                                    if content_blocks.is_empty() {
-                                        None
-                                    } else {
-                                        Some(json!({
-                                            "role": "assistant",
-                                            "content": content_blocks
-                                        }))
+                                        content_blocks.push(json!({
+                                            "type": "tool_use",
+                                            "id": tc.id,
+                                            "name": tc.function.name,
+                                            "input": input
+                                        }));
                                     }
                                 }
-                                "tool" => {
+
+                                if content_blocks.is_empty() {
+                                    None
+                                } else {
                                     Some(json!({
-                                        "role": "user",
-                                        "content": [{
-                                            "type": "tool_result",
-                                            "tool_use_id": msg.tool_call_id.clone().unwrap_or_default(),
-                                            "content": msg.content.clone().unwrap_or_default()
-                                        }]
+                                        "role": "assistant",
+                                        "content": content_blocks
                                     }))
                                 }
-                                _ => None
                             }
+                            "tool" => Some(json!({
+                                "role": "user",
+                                "content": [{
+                                    "type": "tool_result",
+                                    "tool_use_id": msg.tool_call_id.clone().unwrap_or_default(),
+                                    "content": msg.content.clone().unwrap_or_default()
+                                }]
+                            })),
+                            _ => None,
                         })
                         .collect();
 
@@ -577,20 +572,26 @@ impl ApiClient {
                     // Convert tools to Anthropic format
                     if let Some(t) = tools {
                         if !t.is_empty() {
-                            let anthropic_tools: Vec<Value> = t.iter().filter_map(|tool| {
-                                let func = tool.get("function")?;
-                                let name = func.get("name")?.as_str()?;
-                                let description = func.get("description")?.as_str().unwrap_or("");
-                                let parameters = func.get("parameters").cloned()
-                                    .unwrap_or(json!({"type": "object", "properties": {}}));
-                                
-                                Some(json!({
-                                    "name": name,
-                                    "description": description,
-                                    "input_schema": parameters
-                                }))
-                            }).collect();
-                            
+                            let anthropic_tools: Vec<Value> = t
+                                .iter()
+                                .filter_map(|tool| {
+                                    let func = tool.get("function")?;
+                                    let name = func.get("name")?.as_str()?;
+                                    let description =
+                                        func.get("description")?.as_str().unwrap_or("");
+                                    let parameters = func
+                                        .get("parameters")
+                                        .cloned()
+                                        .unwrap_or(json!({"type": "object", "properties": {}}));
+
+                                    Some(json!({
+                                        "name": name,
+                                        "description": description,
+                                        "input_schema": parameters
+                                    }))
+                                })
+                                .collect();
+
                             if !anthropic_tools.is_empty() {
                                 request["tools"] = json!(anthropic_tools);
                             }
@@ -636,8 +637,8 @@ impl ApiClient {
                     // Set up model-specific parameters based on official GLM specs
                     let max_tokens = match self.model.as_str() {
                         "GLM-4.6" => 65536,
-                        "GLM-4.5" | "GLM-4.5-AIR" | "GLM-4.5-X" | "GLM-4.5-AIRX" | "GLM-4.5-FLASH"
-                        | "GLM-4.5V" => 65536,
+                        "GLM-4.5" | "GLM-4.5-AIR" | "GLM-4.5-X" | "GLM-4.5-AIRX"
+                        | "GLM-4.5-FLASH" | "GLM-4.5V" => 65536,
                         "GLM-4-32B-0414-128K" => 16384,
                         _ => 2048,
                     };
@@ -892,17 +893,20 @@ impl ApiClient {
 
                 // Check if this is an Anthropic-format response
                 // Anthropic format has "content" array at top level, OpenAI has "choices"
-                if response_json.get("content").is_some() && response_json.get("type").map(|t| t.as_str()) == Some(Some("message")) {
+                if response_json.get("content").is_some()
+                    && response_json.get("type").map(|t| t.as_str()) == Some(Some("message"))
+                {
                     // Parse Anthropic Messages API response format
                     let content_array = response_json.get("content").and_then(|c| c.as_array());
-                    
+
                     let mut text_content = String::new();
                     let mut tool_calls: Vec<ToolCall> = Vec::new();
-                    
+
                     if let Some(blocks) = content_array {
                         for block in blocks {
-                            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            
+                            let block_type =
+                                block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
                             match block_type {
                                 "text" => {
                                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -911,10 +915,18 @@ impl ApiClient {
                                 }
                                 "tool_use" => {
                                     // Convert Anthropic tool_use to OpenAI-style ToolCall
-                                    let id = block.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                                    let id = block
+                                        .get("id")
+                                        .and_then(|i| i.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let name = block
+                                        .get("name")
+                                        .and_then(|n| n.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     let input = block.get("input").cloned().unwrap_or(json!({}));
-                                    
+
                                     tool_calls.push(ToolCall {
                                         id,
                                         r#type: "function".to_string(),
@@ -928,13 +940,17 @@ impl ApiClient {
                             }
                         }
                     }
-                    
+
                     Ok(ApiResponse {
                         response: text_content,
                         success: true,
                         error: None,
                         usage: None,
-                        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                        tool_calls: if tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(tool_calls)
+                        },
                         model: Some(self.model.clone()),
                         created: None,
                         reasoning_content: None,
@@ -980,9 +996,7 @@ impl ApiClient {
                     })
                 }
             }
-            AIProvider::OpenAI
-            | AIProvider::OpenRouter
-            | AIProvider::Custom => {
+            AIProvider::OpenAI | AIProvider::OpenRouter | AIProvider::Custom => {
                 // OpenAI-compatible response format
                 let response_text = response.text().await?;
 

@@ -21,22 +21,40 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Dots Orbit frames - atom-like orbital animation
-/// Using braille patterns to create rotating dots around center
-const STAR_FRAMES: [&str; 12] = [
-    "⢎⡰", // 0: Dots at position 1
-    "⢎⡡", // 1: Dots rotating
-    "⢎⡑", // 2: Dots rotating
-    "⢎⠱", // 3: Dots rotating
-    "⠎⡱", // 4: Dots at position 2
-    "⢊⡱", // 5: Dots rotating
-    "⢌⡱", // 6: Dots rotating
-    "⢆⡱", // 7: Dots rotating
-    "⢎⡰", // 8: Dots at position 3
-    "⢎⡔", // 9: Dots rotating
-    "⢎⡒", // 10: Dots rotating
-    "⢎⡂", // 11: Dots rotating (cycle complete)
+/// Enhanced orbital frames - atom-like animation with better visual flow
+const ORBITAL_FRAMES: [&str; 16] = [
+    "⢀⠠", "⡀⢀", "⠄⡀", "⢄⠄", "⡄⢄", "⠌⡄", "⢌⠌", "⡌⢌", "⠎⡌", "⢎⠎", "⡎⢎", "⠱⡎", "⢱⠱", "⡱⢱", "⠹⡱", "⢹⠹",
 ];
+
+/// Neural network frames - brain-like pulsing
+const NEURAL_FRAMES: [&str; 8] = ["⚛", "⚛⚡", "⚛⚡⚛", "⚛⚡⚛⚡", "⚛⚡⚛", "⚛⚡", "⚛", "⚛"];
+
+/// Quantum computing frames - subatomic particle animation
+const QUANTUM_FRAMES: [&str; 12] = ["◌", "◉", "◎", "●", "○", "◯", "◇", "◆", "⋄", "⋆", "✦", "✧"];
+
+/// Wave/pulse frames for smooth animations
+const WAVE_FRAMES: [&str; 10] = ["▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅"];
+
+/// Helix/DNA frames - double helix animation
+const HELIX_FRAMES: [&str; 14] = [
+    "╱",
+    "╲",
+    "╱╲",
+    "╲╱",
+    "╱╲╱",
+    "╲╱╲",
+    "╱╲╱╲",
+    "╲╱╲╱",
+    "╱╲╱",
+    "╲╱╲",
+    "╱╲",
+    "╲╱",
+    "╱",
+    "╲",
+];
+
+/// Matrix rain frames - digital rain effect
+const MATRIX_FRAMES: [&str; 8] = ["⠁", "⠂", "⠄", "⡀", "⠄", "⠂", "⠁", "⠂"];
 
 /// Transition effects for animations
 #[derive(Clone)]

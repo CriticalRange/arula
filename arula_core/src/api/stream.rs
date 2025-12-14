@@ -160,8 +160,11 @@ fn convert_tools_to_anthropic(tools: &[Value]) -> Vec<Value> {
             let func = tool.get("function")?;
             let name = func.get("name")?.as_str()?;
             let description = func.get("description")?.as_str().unwrap_or("");
-            let parameters = func.get("parameters").cloned().unwrap_or(json!({"type": "object", "properties": {}}));
-            
+            let parameters = func
+                .get("parameters")
+                .cloned()
+                .unwrap_or(json!({"type": "object", "properties": {}}));
+
             Some(json!({
                 "name": name,
                 "description": description,
@@ -184,21 +187,76 @@ pub fn build_anthropic_request(
         .find(|m| m.role == "system")
         .and_then(|m| m.content.clone());
 
+    // Check if this is Z.AI's Anthropic-compatible endpoint which expects prompt format
+    let is_zai = model.to_lowercase().contains("z.ai")
+        || model.to_lowercase().contains("zai")
+        || std::env::var("ARULA_ZAI_ANTHROPIC").unwrap_or_default() == "1";
+
+    // Z.AI expects legacy Claude format with "prompt" parameter
+    if is_zai {
+        let mut prompt_parts = Vec::new();
+
+        // Add system prompt if present
+        if let Some(system_msg) = messages.iter().find(|m| m.role == "system") {
+            if let Some(content) = &system_msg.content {
+                prompt_parts.push(format!("<admin>\n{}\n</admin>", content));
+            }
+        }
+
+        // Convert messages to prompt format
+        for msg in messages.iter().filter(|m| m.role != "system") {
+            match msg.role.as_str() {
+                "user" => {
+                    if let Some(content) = &msg.content {
+                        prompt_parts.push(format!("\n\nHuman: {}", content));
+                    }
+                }
+                "assistant" => {
+                    if let Some(content) = &msg.content {
+                        prompt_parts.push(format!("\n\nAssistant: {}", content));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // End the prompt properly
+        prompt_parts.push("\n\nAssistant:".to_string());
+        let prompt = prompt_parts.concat();
+
+        let mut request = json!({
+            "model": model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "stream": true
+        });
+
+        // Add temperature
+        request["temperature"] = json!(0.7);
+
+        // Add tools if provided (Z.AI supports tools)
+        if let Some(tools) = tools {
+            if !tools.is_empty() {
+                request["tools"] = json!(convert_tools_to_anthropic(tools));
+            }
+        }
+
+        return request;
+    }
+
     // Build messages array, excluding system messages and converting tool messages
     let anthropic_messages: Vec<Value> = messages
         .iter()
         .filter(|msg| msg.role != "system") // System goes in separate param
         .filter_map(|msg| {
             match msg.role.as_str() {
-                "user" => {
-                    Some(json!({
-                        "role": "user",
-                        "content": msg.content.clone().unwrap_or_default()
-                    }))
-                }
+                "user" => Some(json!({
+                    "role": "user",
+                    "content": msg.content.clone().unwrap_or_default()
+                })),
                 "assistant" => {
                     let mut content_blocks: Vec<Value> = Vec::new();
-                    
+
                     // Add text content if present
                     if let Some(text) = &msg.content {
                         if !text.is_empty() {
@@ -208,12 +266,12 @@ pub fn build_anthropic_request(
                             }));
                         }
                     }
-                    
+
                     // Add tool_use blocks if present
                     if let Some(tool_calls) = &msg.tool_calls {
                         for tc in tool_calls {
-                            let input: Value = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(json!({}));
+                            let input: Value =
+                                serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                             content_blocks.push(json!({
                                 "type": "tool_use",
                                 "id": tc.id,
@@ -222,7 +280,7 @@ pub fn build_anthropic_request(
                             }));
                         }
                     }
-                    
+
                     if content_blocks.is_empty() {
                         None
                     } else {
@@ -243,7 +301,7 @@ pub fn build_anthropic_request(
                         }]
                     }))
                 }
-                _ => None
+                _ => None,
             }
         })
         .collect();
@@ -799,12 +857,7 @@ where
         // Build request - check if we're using Anthropic-compatible endpoint
         let request_body = if is_anthropic_compatible_endpoint(&client.endpoint) {
             // Use Anthropic Messages API format
-            build_anthropic_request(
-                client.model(),
-                &current_messages,
-                Some(tools),
-                4096,
-            )
+            build_anthropic_request(client.model(), &current_messages, Some(tools), 4096)
         } else {
             // Use standard OpenAI-compatible format (for Coding Plan endpoint)
             build_streaming_request(

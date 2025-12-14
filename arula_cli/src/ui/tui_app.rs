@@ -252,10 +252,7 @@ impl AppState {
                     format!("{spinner} Thinking "),
                     Style::default().fg(RColor::Magenta),
                 ));
-                spans.push(Span::styled(
-                    preview,
-                    Style::default().fg(RColor::DarkGray),
-                ));
+                spans.push(Span::styled(preview, Style::default().fg(RColor::DarkGray)));
             } else if !self.current_response.is_empty() {
                 spans.push(Span::styled(
                     format!("{spinner} Responding "),
@@ -277,7 +274,10 @@ impl AppState {
                 ));
             }
         } else {
-            spans.push(Span::styled("✓ API ready", Style::default().fg(RColor::Green)));
+            spans.push(Span::styled(
+                "✓ API ready",
+                Style::default().fg(RColor::Green),
+            ));
         }
 
         spans.push(Span::raw("  "));
@@ -286,7 +286,9 @@ impl AppState {
         let model = self.app.config.get_model();
         spans.push(Span::styled(
             model,
-            Style::default().fg(RColor::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(RColor::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ));
         spans.push(Span::raw("  "));
 
@@ -339,10 +341,10 @@ impl AppState {
             ));
             spans.push(Span::raw("  "));
             if !args_preview.is_empty() {
-            spans.push(Span::styled(
-                args_preview,
-                Style::default().fg(RColor::Gray),
-            ));
+                spans.push(Span::styled(
+                    args_preview,
+                    Style::default().fg(RColor::Gray),
+                ));
                 spans.push(Span::raw("  "));
             }
             spans.push(Span::styled(
@@ -354,10 +356,8 @@ impl AppState {
 
         if self.is_waiting && !self.thinking_content.is_empty() {
             let spinner = ["◐", "◓", "◑", "◒"][self.frame % 4];
-            let preview =
-                TuiApp::thinking_preview(&self.thinking_content, 48).unwrap_or_else(|| {
-                    "Thinking...".to_string()
-                });
+            let preview = TuiApp::thinking_preview(&self.thinking_content, 48)
+                .unwrap_or_else(|| "Thinking...".to_string());
             let mut spans = Vec::new();
             spans.push(Span::styled("┌", border));
             spans.push(Span::styled(
@@ -367,10 +367,7 @@ impl AppState {
                     .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled("┐ ", border));
-            spans.push(Span::styled(
-                preview,
-                Style::default().fg(RColor::Gray),
-            ));
+            spans.push(Span::styled(preview, Style::default().fg(RColor::Gray)));
             lines.push(Line::from(spans));
         }
 
@@ -441,9 +438,8 @@ impl StreamCollector {
 
 fn clean_text(s: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"(\x1b\[[0-9;]*[A-Za-z]|\[\d{1,3}(?:;\d{1,3})*m)").unwrap()
-    });
+    let re =
+        RE.get_or_init(|| Regex::new(r"(\x1b\[[0-9;]*[A-Za-z]|\[\d{1,3}(?:;\d{1,3})*m)").unwrap());
     let stripped = strip_ansi_codes(s);
     re.replace_all(&stripped, "").to_string()
 }

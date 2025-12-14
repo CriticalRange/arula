@@ -54,7 +54,12 @@ pub struct SearchResult {
     pub files_searched: usize,
     /// Whether the search was successful
     pub success: bool,
+    /// Whether the result limit was reached (more results exist)
+    pub limit_reached: bool,
 }
+
+/// Default maximum number of results to return
+const DEFAULT_MAX_RESULTS: usize = 50;
 
 /// File search tool
 ///
@@ -190,7 +195,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search for patterns in files. Supports literal and regex matching."
+        "Search for patterns in files. Supports literal and regex matching. Results are limited to prevent API errors."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -230,7 +235,7 @@ impl Tool for SearchTool {
 
         let search_path = path.unwrap_or_else(|| ".".to_string());
         let use_regex = regex.unwrap_or(false);
-        let max_results = max_results.unwrap_or(100);
+        let max_results = max_results.unwrap_or(DEFAULT_MAX_RESULTS);
 
         let mut results = Vec::new();
         let mut files_searched = 0;
@@ -247,11 +252,13 @@ impl Tool for SearchTool {
             &mut total_matches,
         )?;
 
+        let limit_reached = total_matches > max_results;
         Ok(SearchResult {
             files: results,
             total_matches,
             files_searched,
             success: true,
+            limit_reached,
         })
     }
 }

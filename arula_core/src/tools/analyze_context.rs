@@ -103,11 +103,7 @@ impl AnalyzeContextTool {
         for entry in walker {
             let entry = entry.map_err(|e| format!("Failed to walk directory: {e}"))?;
             let path = entry.path();
-            let name = entry
-                .file_name()
-                .to_str()
-                .unwrap_or_default()
-                .to_string();
+            let name = entry.file_name().to_str().unwrap_or_default().to_string();
 
             if entry.file_type().is_dir() {
                 if !include_hidden && name.starts_with('.') {
@@ -170,7 +166,10 @@ impl AnalyzeContextTool {
 
         let mut languages: Vec<_> = counts.into_iter().collect();
         languages.sort_by(|a, b| b.1.cmp(&a.1));
-        languages.into_iter().map(|(lang, _)| lang.to_string()).collect()
+        languages
+            .into_iter()
+            .map(|(lang, _)| lang.to_string())
+            .collect()
     }
 
     fn load_toml(path: &Path) -> Option<toml::Value> {
@@ -315,7 +314,11 @@ impl AnalyzeContextTool {
                 };
                 if let Some(kind) = kind {
                     points.push(EntryPoint {
-                        path: path.strip_prefix(root).unwrap_or(path).to_string_lossy().into(),
+                        path: path
+                            .strip_prefix(root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .into(),
                         kind: kind.to_string(),
                         description: None,
                     });
@@ -399,7 +402,10 @@ impl AnalyzeContextTool {
         if entry_points.iter().any(|e| e.kind == "rust_bin") {
             return Some("cli".to_string());
         }
-        if frameworks.iter().any(|f| f == "react" || f == "next.js" || f == "vue") {
+        if frameworks
+            .iter()
+            .any(|f| f == "react" || f == "next.js" || f == "vue")
+        {
             return Some("web".to_string());
         }
         None
@@ -456,11 +462,20 @@ impl Tool for AnalyzeContextTool {
             "Analyze the repository and return a structured overview",
         )
         .param("root_path", "string")
-        .description("root_path", "Root directory to analyze (default: current directory)")
+        .description(
+            "root_path",
+            "Root directory to analyze (default: current directory)",
+        )
         .param("max_files", "integer")
-        .description("max_files", "Maximum number of files to scan (default: 500)")
+        .description(
+            "max_files",
+            "Maximum number of files to scan (default: 500)",
+        )
         .param("include_hidden", "boolean")
-        .description("include_hidden", "Include hidden files and build outputs (default: false)")
+        .description(
+            "include_hidden",
+            "Include hidden files and build outputs (default: false)",
+        )
         .build()
     }
 
@@ -478,7 +493,9 @@ impl Tool for AnalyzeContextTool {
         // Check cache
         if let Ok(guard) = cache().lock() {
             if let Some(entry) = guard.get(&root) {
-                if entry.signature == signature && entry.captured_at.elapsed() < Duration::from_secs(120) {
+                if entry.signature == signature
+                    && entry.captured_at.elapsed() < Duration::from_secs(120)
+                {
                     let mut cached_result = entry.result.clone();
                     cached_result.cached = true;
                     return Ok(cached_result);

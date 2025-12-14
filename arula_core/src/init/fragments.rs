@@ -29,8 +29,8 @@ pub struct ProjectEssence {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectStructure {
     pub core_components: Vec<(String, String)>, // (name, description)
-    pub key_files: Vec<(String, String)>,        // (path, purpose)
-    pub entry_points: HashMap<String, String>,   // (type, path)
+    pub key_files: Vec<(String, String)>,       // (path, purpose)
+    pub entry_points: HashMap<String, String>,  // (type, path)
 }
 
 /// Patterns and conventions used in the project
@@ -170,7 +170,9 @@ impl ProjectManifest {
     pub fn add_recent_change(&mut self, change: &str) {
         use chrono::Utc;
         let date = Utc::now().format("%Y-%m-%d").to_string();
-        self.ai_notes.recent_changes.insert(0, format!("[{}] {}", date, change));
+        self.ai_notes
+            .recent_changes
+            .insert(0, format!("[{}] {}", date, change));
 
         // Keep only last 10 changes
         self.ai_notes.recent_changes.truncate(10);

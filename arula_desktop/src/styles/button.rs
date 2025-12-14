@@ -17,6 +17,7 @@ pub fn primary_button_style(
                 radius: BUTTON_BORDER_RADIUS.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         };
         match status {
             button::Status::Hovered => button::Style {
@@ -53,6 +54,7 @@ pub fn secondary_button_style(
             radius: BUTTON_BORDER_RADIUS.into(),
         },
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -87,6 +89,7 @@ pub fn icon_button_style(
                 radius: 12.0.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         };
 
         match status {
@@ -134,6 +137,7 @@ pub fn send_button_style(
                 ..Default::default()
             },
             shadow,
+            snap: false,
         }
     }
 }
@@ -169,6 +173,7 @@ pub fn cog_button_container_style_button(
                 radius: 12.0.into(),
             },
             shadow: Shadow::default(),
+            snap: false,
         };
 
         match status {

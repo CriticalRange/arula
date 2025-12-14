@@ -3,8 +3,8 @@
 //! This file demonstrates how to use the Project Learning System
 //! to understand projects through structured discovery.
 
-use crate::api::agent_client::AgentClient;
 use crate::api::agent::AgentOptionsBuilder;
+use crate::api::agent_client::AgentClient;
 use crate::init::{InitSystem, SbpFiles};
 use crate::utils::config::Config;
 use anyhow::Result;
@@ -35,7 +35,9 @@ pub async fn example_learn_project() -> Result<SbpFiles> {
     let project_path = "./my-project";
 
     // Learn about the project
-    let understanding = learning_system.learn_about_project(initial_understanding, project_path).await?;
+    let understanding = learning_system
+        .learn_about_project(initial_understanding, project_path)
+        .await?;
 
     // Generate analysis report
     let report = learning_system.generate_analysis_report(&understanding)?;

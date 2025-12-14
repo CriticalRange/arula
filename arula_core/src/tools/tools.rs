@@ -20,10 +20,11 @@
 #[allow(unused_imports)]
 pub use crate::tools::builtin::{
     BashParams, BashResult, BashTool, DirectoryEntry, FileEditParams, FileEditResult, FileEditTool,
-    FileReadParams, FileReadResult, FileReadTool, ListDirParams, ListDirResult, ListDirectoryTool,
-    QuestionParams, QuestionResult, QuestionTool, SearchMatch, SearchParams, SearchResult,
-    SearchTool, WebSearchParams, WebSearchResult, WebSearchResultItem, WebSearchTool,
-    WriteFileParams, WriteFileResult, WriteFileTool,
+    FileReadParams, FileReadResult, FileReadTool, FindFilesParams, FindFilesResult, FindFilesTool,
+    FoundFile, ListDirParams, ListDirResult, ListDirectoryTool, QuestionParams, QuestionResult,
+    QuestionTool, SearchMatch, SearchParams, SearchResult, SearchTool, WebSearchParams,
+    WebSearchResult, WebSearchResultItem, WebSearchTool, WriteFileParams, WriteFileResult,
+    WriteFileTool,
 };
 
 // Re-export analyze_context tool
@@ -48,6 +49,7 @@ pub fn create_basic_tool_registry() -> crate::api::agent::ToolRegistry {
     registry.register(FileReadTool::new());
     registry.register(FileEditTool::new());
     registry.register(WriteFileTool::new());
+    registry.register(FindFilesTool::new());
     registry.register(ListDirectoryTool::new());
     registry.register(SearchTool::new());
     registry.register(WebSearchTool::new());
@@ -103,15 +105,16 @@ mod tests {
         let tools = registry.get_tools();
 
         // Should have all basic tools registered
-        assert!(tools.contains(&"execute_bash"));
-        assert!(tools.contains(&"read_file"));
-        assert!(tools.contains(&"write_file"));
-        assert!(tools.contains(&"edit_file"));
-        assert!(tools.contains(&"list_directory"));
-        assert!(tools.contains(&"search_files"));
-        assert!(tools.contains(&"web_search"));
-        assert!(tools.contains(&"visioneer"));
-        assert!(tools.contains(&"ask_question"));
-        assert!(tools.contains(&"analyze_context"));
+        assert!(tools.contains(&"execute_bash".to_string()));
+        assert!(tools.contains(&"read_file".to_string()));
+        assert!(tools.contains(&"write_file".to_string()));
+        assert!(tools.contains(&"edit_file".to_string()));
+        assert!(tools.contains(&"find_files".to_string()));
+        assert!(tools.contains(&"list_directory".to_string()));
+        assert!(tools.contains(&"search_files".to_string()));
+        assert!(tools.contains(&"web_search".to_string()));
+        assert!(tools.contains(&"visioneer".to_string()));
+        assert!(tools.contains(&"ask_question".to_string()));
+        assert!(tools.contains(&"analyze_context".to_string()));
     }
 }

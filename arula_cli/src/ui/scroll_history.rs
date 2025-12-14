@@ -112,58 +112,58 @@ pub fn insert_history_lines(
     // Place cursor at the line above the viewport to start inserting.
     queue!(writer, MoveTo(0, viewport_top.saturating_sub(1)))?;
 
-        let width = screen_width.max(1) as usize;
-        for line in lines.into_iter() {
-            let owned = line_to_static(&line);
-            let wrapped = wrap_line(&owned, width);
-            for wrapped_line in wrapped {
-                queue!(writer, Print("\r\n"))?;
+    let width = screen_width.max(1) as usize;
+    for line in lines.into_iter() {
+        let owned = line_to_static(&line);
+        let wrapped = wrap_line(&owned, width);
+        for wrapped_line in wrapped {
+            queue!(writer, Print("\r\n"))?;
+            queue!(
+                writer,
+                Clear(ClearType::UntilNewLine),
+                SetColors(Colors::new(
+                    wrapped_line
+                        .style
+                        .fg
+                        .map(to_crossterm_color)
+                        .unwrap_or(crossterm::style::Color::Reset),
+                    wrapped_line
+                        .style
+                        .bg
+                        .map(to_crossterm_color)
+                        .unwrap_or(crossterm::style::Color::Reset)
+                ))
+            )?;
+
+            let merged_spans: Vec<RSpan> = wrapped_line
+                .spans
+                .iter()
+                .map(|s| RSpan {
+                    content: s.content.clone(),
+                    style: s.style.patch(wrapped_line.style),
+                })
+                .collect();
+
+            for span in merged_spans {
                 queue!(
                     writer,
-                    Clear(ClearType::UntilNewLine),
-                    SetColors(Colors::new(
-                        wrapped_line
-                            .style
+                    SetForegroundColor(
+                        span.style
                             .fg
                             .map(to_crossterm_color)
-                            .unwrap_or(crossterm::style::Color::Reset),
-                        wrapped_line
-                            .style
+                            .unwrap_or(crossterm::style::Color::Reset)
+                    ),
+                    SetBackgroundColor(
+                        span.style
                             .bg
                             .map(to_crossterm_color)
                             .unwrap_or(crossterm::style::Color::Reset)
-                    ))
+                    ),
+                    Print(span.content)
                 )?;
-
-                let merged_spans: Vec<RSpan> = wrapped_line
-                    .spans
-                    .iter()
-                    .map(|s| RSpan {
-                        content: s.content.clone(),
-                        style: s.style.patch(wrapped_line.style),
-                    })
-                    .collect();
-
-                for span in merged_spans {
-                    queue!(
-                        writer,
-                        SetForegroundColor(
-                            span.style
-                                .fg
-                                .map(to_crossterm_color)
-                                .unwrap_or(crossterm::style::Color::Reset)
-                        ),
-                        SetBackgroundColor(
-                            span.style
-                                .bg
-                                .map(to_crossterm_color)
-                                .unwrap_or(crossterm::style::Color::Reset)
-                        ),
-                        Print(span.content)
-                    )?;
-                }
             }
         }
+    }
 
     // Reset region/cursor.
     queue!(writer, ResetScrollRegion)?;
@@ -225,7 +225,10 @@ fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
                 continue;
             }
 
-            let token_width: usize = token.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+            let token_width: usize = token
+                .chars()
+                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum();
 
             // Long word that exceeds width on its own: fall back to character wrapping.
             if token_width > width && !is_space {

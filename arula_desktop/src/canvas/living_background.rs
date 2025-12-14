@@ -50,7 +50,7 @@ impl<'a, Message> canvas::Program<Message> for LivingBackground<'a, Message> {
             let r = active_bg.r * self.opacity + disabled_bg.r * (1.0 - self.opacity);
             let g = active_bg.g * self.opacity + disabled_bg.g * (1.0 - self.opacity);
             let b = active_bg.b * self.opacity + disabled_bg.b * (1.0 - self.opacity);
-            let bg_color = Color::new(r, g, b, 1.0);
+            let bg_color = Color::from_rgba(r, g, b, 1.0);
 
             // Fill background
             frame.fill_rectangle(

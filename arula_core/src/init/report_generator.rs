@@ -4,8 +4,8 @@
 
 use crate::init::fragments::*;
 use anyhow::Result;
-use std::fmt::Write;
 use std::collections::HashMap;
+use std::fmt::Write;
 
 /// Generates PROJECT.manifest from project understanding
 pub struct ManifestGenerator;
@@ -39,11 +39,15 @@ impl ManifestGenerator {
                 key_technologies: understanding.architecture.technologies.clone(),
             },
             structure: ProjectStructure {
-                core_components: understanding.architecture.components
+                core_components: understanding
+                    .architecture
+                    .components
                     .iter()
                     .map(|c| (c.clone(), "Core component".to_string()))
                     .collect(),
-                key_files: understanding.current_state.existing_code
+                key_files: understanding
+                    .current_state
+                    .existing_code
                     .iter()
                     .map(|f| (f.clone(), "Key file".to_string()))
                     .collect(),
@@ -55,13 +59,17 @@ impl ManifestGenerator {
                     functions: "auto".to_string(),
                     variables: "auto".to_string(),
                 },
-                architecture_patterns: understanding.architecture.patterns
+                architecture_patterns: understanding
+                    .architecture
+                    .patterns
                     .iter()
                     .map(|p| (p.clone(), "Used throughout".to_string()))
                     .collect(),
             },
             dependencies: ProjectDependencies {
-                external_libraries: understanding.current_state.dependencies
+                external_libraries: understanding
+                    .current_state
+                    .dependencies
                     .iter()
                     .map(|d| (d.clone(), "Dependency".to_string()))
                     .collect(),
@@ -79,7 +87,9 @@ impl ManifestGenerator {
             },
             ai_notes: AIAssistanceNotes {
                 common_tasks: vec![],
-                gotchas: understanding.current_state.pain_points
+                gotchas: understanding
+                    .current_state
+                    .pain_points
                     .iter()
                     .map(|p| (p.clone(), "Known issue".to_string()))
                     .collect(),
@@ -117,11 +127,17 @@ impl ManifestGenerator {
         writeln!(output, "# ESSENCE (TL;DR for AI)")?;
         writeln!(output, "purpose: {}", manifest.essence.purpose)?;
         writeln!(output, "architecture: {}", manifest.essence.architecture)?;
-        writeln!(output, "key_technologies: {}", manifest.essence.key_technologies.join(", "))?;
+        writeln!(
+            output,
+            "key_technologies: {}",
+            manifest.essence.key_technologies.join(", ")
+        )?;
         writeln!(output)?;
 
         // Structure
-        if !manifest.structure.core_components.is_empty() || !manifest.structure.key_files.is_empty() {
+        if !manifest.structure.core_components.is_empty()
+            || !manifest.structure.key_files.is_empty()
+        {
             writeln!(output, "# STRUCTURE")?;
             if !manifest.structure.core_components.is_empty() {
                 writeln!(output, "## Core Components")?;

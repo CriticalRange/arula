@@ -53,7 +53,9 @@ impl MainMenuItem {
     pub fn description(&self) -> &str {
         match self {
             MainMenuItem::ContinueChat => "Return to conversation",
-            MainMenuItem::InitProject => "Create a PROJECT.manifest file for AI quick understanding",
+            MainMenuItem::InitProject => {
+                "Create a PROJECT.manifest file for AI quick understanding"
+            }
             MainMenuItem::Conversations => "View, load, or manage saved conversations",
             MainMenuItem::Settings => "Configure AI provider and configuration",
             MainMenuItem::InfoHelp => "View help and session information",

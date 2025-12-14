@@ -183,8 +183,7 @@ impl Session {
         // 15 chars is enough to have a meaningful start like "I'll read the"
         if trimmed.len() >= 15 {
             self.finalize_thinking_messages();
-            self.messages
-                .push(MessageEntry::ai(trimmed, timestamp));
+            self.messages.push(MessageEntry::ai(trimmed, timestamp));
             self.ai_buffer.clear();
         }
     }
@@ -296,6 +295,13 @@ impl Session {
     /// Sets the streaming state.
     pub fn set_streaming(&mut self, streaming: bool) {
         self.is_streaming = streaming;
+    }
+
+    /// Clears all messages from the session.
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.ai_buffer.clear();
+        self.is_streaming = false;
     }
 }
 
