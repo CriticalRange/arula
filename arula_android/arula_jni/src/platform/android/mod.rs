@@ -1,10 +1,7 @@
 //! Android-specific platform implementations
 
-use crate::tools::Tool;
 use anyhow::Result;
-use async_trait::async_trait;
 use jni::{JNIEnv, objects::{JClass, JString, JObject}, sys::jobject};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,7 +20,7 @@ pub use notification::AndroidNotification;
 /// Android platform context
 #[derive(Clone)]
 pub struct AndroidContext {
-    pub jvm: Arc<jni::JavaVM>,
+    // Note: JVM is obtained from the JNI call, not stored
     pub context: Arc<Mutex<Option<jobject>>>,
     pub callback: Arc<Mutex<Option<jobject>>>,
 }
@@ -31,7 +28,6 @@ pub struct AndroidContext {
 impl AndroidContext {
     pub fn new() -> Self {
         Self {
-            jvm: Arc::new(jni::JavaVM::default()),
             context: Arc::new(Mutex::new(None)),
             callback: Arc::new(Mutex::new(None)),
         }
@@ -44,10 +40,11 @@ impl AndroidContext {
     pub async fn set_callback(&self, cb: jobject) {
         *self.callback.lock().await = Some(cb);
     }
+}
 
-    pub fn get_env(&self) -> Result<JNIEnv> {
-        self.jvm.attach_current_thread()
-            .map_err(|e| anyhow::anyhow!("Failed to attach to JVM: {}", e))
+impl Default for AndroidContext {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -64,11 +61,12 @@ pub struct AndroidPlatform {
 impl AndroidPlatform {
     pub fn new(ctx: AndroidContext) -> Self {
         Self {
+            ctx: ctx.clone(),
             terminal: AndroidTerminal::new(ctx.clone()),
             filesystem: AndroidFileSystem::new(ctx.clone()),
             command: AndroidCommandExecutor::new(ctx.clone()),
             config: AndroidConfig::new(ctx.clone()),
-            notification: AndroidNotification::new(ctx.clone()),
+            notification: AndroidNotification::new(ctx),
         }
     }
 
@@ -95,59 +93,85 @@ impl AndroidPlatform {
 
 /// JNI exports for Android integration
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_initialize(
-    env: JNIEnv,
-    _class: JClass,
-    config_json: JString,
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_initialize<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    config_json: JString<'local>,
 ) -> bool {
-    // This will be implemented when we integrate with the main arula core
-    log::info!("Android Arula initializing...");
+    let config_str: String = match env.get_string(&config_json) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("Failed to get config string: {:?}", e);
+            return false;
+        }
+    };
+
+    // Initialize android logger
+    #[cfg(target_os = "android")]
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("ArulaCore"),
+    );
+
+    log::info!("Arula Android Core initialized with config: {}", config_str);
     true
 }
 
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_sendMessage(
-    env: JNIEnv,
-    _class: JClass,
-    message: JString,
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_sendMessage<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    message: JString<'local>,
 ) {
     // Send message to AI
-    log::info!("Sending message: {:?}", env.get_string(message));
+    match env.get_string(&message) {
+        Ok(msg) => {
+            let msg_str: String = msg.into();
+            log::info!("Sending message: {}", msg_str);
+        }
+        Err(e) => {
+            log::error!("Failed to get message string: {:?}", e);
+        }
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_setConfig(
-    env: JNIEnv,
-    _class: JClass,
-    config_json: JString,
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_setConfig<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _config_json: JString<'local>,
 ) {
     // Update configuration
 }
 
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_getConfig(
-    env: JNIEnv,
-    _class: JClass,
-) -> JString {
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_getConfig<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> JString<'local> {
     // Return current configuration
     let config = "{}";
-    env.new_string(config).unwrap_or(JObject::null()).into()
+    match env.new_string(config) {
+        Ok(s) => s,
+        Err(_) => JString::default(),
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_cleanup(
-    _env: JNIEnv,
-    _class: JClass,
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_cleanup<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
 ) {
     // Cleanup resources
     log::info!("Android Arula cleanup");
 }
 
 #[no_mangle]
-pub extern "C" fn Java_com_arula_terminal_ArulaNative_setCallback(
-    env: JNIEnv,
-    _class: JClass,
-    callback: JObject,
+pub extern "C" fn Java_com_arula_terminal_ArulaNative_setCallback<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    _callback: JObject<'local>,
 ) {
     // Store callback for later use
     log::info!("Setting Android callback");
@@ -155,8 +179,6 @@ pub extern "C" fn Java_com_arula_terminal_ArulaNative_setCallback(
 
 /// Callback functions from Rust to Java
 pub mod callbacks {
-    use super::*;
-
     pub fn on_message(message: &str) {
         // Call Java callback
         log::info!("Message: {}", message);

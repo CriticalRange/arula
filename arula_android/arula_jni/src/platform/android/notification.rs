@@ -115,7 +115,7 @@ impl AndroidNotification {
             SoundType::Notification => "notification",
             SoundType::Alarm => "alarm",
             SoundType::Ringtone => "ringtone",
-            SoundType::Custom(name) => name,
+            SoundType::Custom(ref name) => name.as_str(),
         };
 
         let command = format!("termux-bell -f {}", sound);

@@ -53,9 +53,9 @@ impl AndroidCommandExecutor {
             while let Some(line) = reader.next_line().await.map_err(|e| {
                 log::error!("Error reading stdout: {}", e);
             })? {
-                lines.push(line);
-                // Send to callback
+                // Send to callback before pushing
                 callbacks::on_stream_chunk(&line);
+                lines.push(line);
             }
             Ok::<(), ()>(())
         });
@@ -69,9 +69,9 @@ impl AndroidCommandExecutor {
             while let Some(line) = reader.next_line().await.map_err(|e| {
                 log::error!("Error reading stderr: {}", e);
             })? {
+                // Send error to callback before pushing
+                callbacks::on_stream_chunk(&format!("[ERROR] {}", &line));
                 lines.push(line);
-                // Send error to callback
-                callbacks::on_stream_chunk(&format!("[ERROR] {}", line));
             }
             Ok::<(), ()>(())
         });

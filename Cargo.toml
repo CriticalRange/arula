@@ -4,6 +4,9 @@ members = [
     "arula_cli",
     "arula_desktop",
 ]
+exclude = [
+    "arula_android/arula_jni",  # Android cross-compilation target
+]
 resolver = "2"
 
 [workspace.package]

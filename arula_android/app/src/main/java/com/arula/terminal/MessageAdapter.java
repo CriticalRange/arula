@@ -30,6 +30,7 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
 
     private final Map<String, Integer> toolMessagePositions = new HashMap<>();
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm", Locale.getDefault());
+    private final List<Message> messageList = new ArrayList<>();
 
     public MessageAdapter() {
         super(DIFF_CALLBACK);
@@ -47,6 +48,22 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
     public void onBindViewHolder(@NonNull MessageViewHolder holder, int position) {
         Message message = getItem(position);
         holder.bind(message);
+    }
+
+    public void setMessages(List<Message> messages) {
+        messageList.clear();
+        messageList.addAll(messages);
+        submitList(new ArrayList<>(messageList));
+    }
+
+    public void addMessage(Message message) {
+        messageList.add(message);
+        submitList(new ArrayList<>(messageList));
+    }
+
+    public void clearMessages() {
+        messageList.clear();
+        submitList(new ArrayList<>(messageList));
     }
 
     public void appendToLastMessage(String chunk) {

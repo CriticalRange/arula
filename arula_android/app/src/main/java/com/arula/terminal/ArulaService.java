@@ -83,7 +83,7 @@ public class ArulaService extends Service implements ArulaNative.ArulaCallback {
 
             // Default configuration for service
             String config = createServiceConfig();
-            isInitialized = ArulaNative.initialize(this, config);
+            isInitialized = ArulaNative.initializeWithContext(this, config);
 
             if (isInitialized) {
                 Log.i(TAG, "Arula service initialized successfully");

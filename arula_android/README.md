@@ -16,10 +16,11 @@ Android version of Arula AI terminal assistant, built with Java UI and Rust core
    - `arula_jni.cpp` - C++ JNI implementation
    - Handles communication between Java and Rust
 
-3. **Rust Core** (`arula_core/src/`)
+3. **Rust JNI Bridge** (`arula_jni/src/`)
    - `platform/android/` - Android-specific implementations
    - `mod.rs` - JNI exports and platform abstractions
    - `terminal.rs` - Termux:API integration
+   - References `arula_core` from the parent workspace
 
 ## Features
 
@@ -34,29 +35,29 @@ Android version of Arula AI terminal assistant, built with Java UI and Rust core
 
 - Android Studio 2022.3.1 or later
 - Android NDK 25.2.9519653 or later
-- Rust 1.70+ with cargo-ndk
+- Rust 1.70+ with Android targets
 - Termux:API (optional, for enhanced features)
 
 ## Build Instructions
 
-1. Install Rust and cargo-ndk:
+1. Install Rust and Android targets:
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   cargo install cargo-ndk
+   rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
    ```
 
-2. Set Android NDK environment:
+2. Install Android NDK via Android Studio:
+   - Open Android Studio > Settings > SDK Manager > SDK Tools
+   - Install NDK (Side by side)
+
+3. Build the Rust JNI library:
    ```bash
-   export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
+   cd arula_android
+   ./build_native.sh
    ```
+   This will compile the native library for all Android architectures and place them in `app/src/main/jniLibs/`.
 
-3. Build the Rust library:
-   ```bash
-   cd arula_android/arula_core
-   cargo ndk --target aarch64-linux-android build --release
-   ```
-
-4. Open in Android Studio and build the project
+4. Open the `arula_android` folder in Android Studio and build the project
 
 ## Integration Points
 

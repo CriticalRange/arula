@@ -2,12 +2,12 @@ apply plugin: 'com.android.application'
 
 android {
     namespace 'com.arula.terminal'
-    compileSdk 30
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.arula.terminal"
         minSdk 24
-        targetSdk 30
+        targetSdk 34
         versionCode 1
         versionName "1.0"
 

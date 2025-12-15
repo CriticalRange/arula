@@ -23,7 +23,6 @@ impl AndroidConfig {
 
     /// Load configuration from SharedPreferences
     pub async fn load(&self) -> Result<Config> {
-        let env = self.ctx.get_env()?;
         let mut config = Config::default();
 
         // In a real implementation, this would use SharedPreferences
@@ -108,8 +107,10 @@ impl AndroidConfig {
     /// Get API key for provider
     pub async fn get_api_key(&self, provider: &str) -> Option<String> {
         let env_key = format!("{}_API_KEY", provider.to_uppercase());
-        std::env::var(&env_key).ok()
-            .or_else(|| self.get(&format!("{}.api_key", provider)).await)
+        if let Some(key) = std::env::var(&env_key).ok() {
+            return Some(key);
+        }
+        self.get(&format!("{}.api_key", provider)).await
     }
 
     /// Get model for provider

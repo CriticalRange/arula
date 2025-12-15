@@ -23,6 +23,7 @@ import com.arula.terminal.databinding.ActivityMainBinding;
 import com.google.android.material.snackbar.Snackbar;
 import org.json.JSONException;
 import org.json.JSONObject;
+import java.util.List;
 
 /**
  * Main activity for Arula Terminal
@@ -110,23 +111,21 @@ public class MainActivity extends AppCompatActivity implements ArulaNative.Arula
     }
 
     private void initializeArula() {
-        try {
-            // Load configuration
-            JSONObject config = viewModel.getConfig();
+        // Load configuration
+        JSONObject config = viewModel.getConfig();
 
-            // Initialize native library
-            ArulaNative.setCallback(this);
-            boolean initialized = ArulaNative.initializeWithContext(this, config.toString());
+        // Initialize native library
+        ArulaNative.setCallback(this);
+        boolean initialized = ArulaNative.initializeWithContext(this, config.toString());
 
-            if (!initialized) {
-                showError("Failed to initialize Arula core");
-            } else {
-                // Load conversation history
-                messageAdapter.setMessages(viewModel.getMessages());
+        if (!initialized) {
+            showError("Failed to initialize Arula core");
+        } else {
+            // Load conversation history
+            List<Message> history = viewModel.getMessages().getValue();
+            if (history != null) {
+                messageAdapter.setMessages(history);
             }
-        } catch (JSONException e) {
-            Log.e(TAG, "Failed to load configuration", e);
-            showError("Configuration error: " + e.getMessage());
         }
     }
 

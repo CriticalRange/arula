@@ -3,6 +3,8 @@ name = "arula_android"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]  # Standalone crate, not part of parent workspace
+
 [lib]
 crate-type = ["cdylib"]  # Compile as dynamic library for Android
 
@@ -25,6 +27,9 @@ serde_json = "1.0"
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
+
+# UUID with serde support (required by arula_core)
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Utilities
 async-trait = "0.1"
