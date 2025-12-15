@@ -8,7 +8,7 @@ import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.ListAdapter;
 import androidx.recyclerview.widget.RecyclerView;
-import com.arula.terminal.databinding.ItemMessageBinding;
+import com.arula.terminal.databinding.ItemMessageNeonBinding;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -40,7 +40,8 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
     @Override
     public MessageViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         LayoutInflater inflater = LayoutInflater.from(parent.getContext());
-        ItemMessageBinding binding = ItemMessageBinding.inflate(inflater, parent, false);
+        // Use the new neon layout
+        ItemMessageNeonBinding binding = ItemMessageNeonBinding.inflate(inflater, parent, false);
         return new MessageViewHolder(binding);
     }
 
@@ -87,9 +88,9 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
     }
 
     static class MessageViewHolder extends RecyclerView.ViewHolder {
-        private final ItemMessageBinding binding;
+        private final ItemMessageNeonBinding binding;
 
-        public MessageViewHolder(ItemMessageBinding binding) {
+        public MessageViewHolder(ItemMessageNeonBinding binding) {
             super(binding.getRoot());
             this.binding = binding;
         }
@@ -98,40 +99,62 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
             // Set message content
             binding.messageText.setText(message.getText());
 
+            android.content.Context ctx = itemView.getContext();
+
             // Set message appearance based on type
             switch (message.getType()) {
                 case USER:
-                    binding.messageCard.setCardBackgroundColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.holo_blue_light, null));
+                    binding.messageCard.setCardBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_accent, null));
                     binding.senderText.setText("You");
-                    binding.senderText.setTextColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.white, null));
+                    binding.senderText.setTextColor(
+                        ctx.getResources().getColor(R.color.neon_text, null));
+                    binding.senderIndicator.setBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_success, null));
+                    // Apply gradient background
+                    binding.messageCard.setBackgroundResource(R.drawable.bg_user_message);
                     break;
 
                 case ASSISTANT:
-                    binding.messageCard.setCardBackgroundColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.background_light, null));
+                    binding.messageCard.setCardBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_surface_raised, null));
                     binding.senderText.setText("Arula");
-                    binding.senderText.setTextColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.primary_text_light, null));
+                    binding.senderText.setTextColor(
+                        ctx.getResources().getColor(R.color.neon_text, null));
+                    binding.senderIndicator.setBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_accent, null));
+                    // Apply surface background
+                    binding.messageCard.setBackgroundResource(R.drawable.bg_assistant_message);
                     break;
 
                 case TOOL:
-                    binding.messageCard.setCardBackgroundColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.holo_orange_light, null));
+                    binding.messageCard.setCardBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_tool_bubble, null));
                     binding.senderText.setText("Tool");
-                    binding.senderText.setTextColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.white, null));
+                    binding.senderText.setTextColor(
+                        ctx.getResources().getColor(R.color.neon_text, null));
+                    binding.senderIndicator.setBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_success, null));
+                    // Apply tool background
+                    binding.messageCard.setBackgroundResource(R.drawable.bg_tool_message);
                     break;
 
                 case ERROR:
-                    binding.messageCard.setCardBackgroundColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.holo_red_light, null));
+                    binding.messageCard.setCardBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_danger, null));
                     binding.senderText.setText("Error");
-                    binding.senderText.setTextColor(itemView.getContext()
-                        .getResources().getColor(android.R.color.white, null));
+                    binding.senderText.setTextColor(
+                        ctx.getResources().getColor(R.color.neon_text, null));
+                    binding.senderIndicator.setBackgroundColor(
+                        ctx.getResources().getColor(R.color.neon_danger, null));
                     break;
             }
+
+            // Set neon styling for text
+            binding.messageText.setTextColor(
+                ctx.getResources().getColor(R.color.neon_text, null));
+            binding.timestampText.setTextColor(
+                ctx.getResources().getColor(R.color.neon_muted, null));
 
             // Set timestamp
             if (message.getTimestamp() > 0) {
@@ -140,6 +163,13 @@ public class MessageAdapter extends ListAdapter<Message, MessageAdapter.MessageV
                 binding.timestampText.setText(time);
             } else {
                 binding.timestampText.setText("");
+            }
+
+            // Add neon glow effect for messages
+            if (message.getType() == Message.Type.USER || message.getType() == Message.Type.ASSISTANT) {
+                binding.messageCard.setElevation(4f);
+            } else {
+                binding.messageCard.setElevation(0f);
             }
         }
     }

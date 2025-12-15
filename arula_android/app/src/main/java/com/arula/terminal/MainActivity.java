@@ -13,7 +13,13 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.TextView;
+
+// Import custom UI components
+import com.arula.terminal.ui.canvas.LivingBackground;
+import com.arula.terminal.ui.canvas.LoadingSpinner;
+import com.arula.terminal.ui.menu.SlidingMenuView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.lifecycle.ViewModelProvider;
@@ -37,6 +43,12 @@ public class MainActivity extends AppCompatActivity implements ArulaNative.Arula
     private MainViewModel viewModel;
     private Handler mainHandler;
 
+    // Advanced UI components
+    private LivingBackground livingBackground;
+    private LoadingSpinner typingSpinner;
+    private SlidingMenuView slidingMenu;
+    private ImageButton menuButton;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -59,8 +71,15 @@ public class MainActivity extends AppCompatActivity implements ArulaNative.Arula
         // Setup input field
         setupInputField();
 
+        // Setup menu button
+        menuButton = binding.getRoot().findViewById(R.id.menuButton);
+        menuButton.setOnClickListener(v -> toggleMenu());
+
         // Setup send button
         binding.sendButton.setOnClickListener(v -> sendMessage());
+
+        // Initialize advanced UI components
+        initializeAdvancedUI();
 
         // Initialize Arula core
         initializeArula();
@@ -196,8 +215,60 @@ public class MainActivity extends AppCompatActivity implements ArulaNative.Arula
         });
     }
 
+    private void initializeAdvancedUI() {
+        // Initialize living background
+        livingBackground = binding.getRoot().findViewById(R.id.livingBackground);
+        livingBackground.setEnabled(true);
+        livingBackground.setOpacity(0.5f); // Semi-transparent by default
+
+        // Initialize typing indicator spinner
+        LinearLayout typingIndicator = binding.getRoot().findViewById(R.id.typingIndicator);
+        typingSpinner = typingIndicator.findViewById(R.id.typingSpinner);
+        typingSpinner.setAnimationSpeed(1.5f);
+
+        // Initialize sliding menu
+        slidingMenu = binding.getRoot().findViewById(R.id.slidingMenu);
+        slidingMenu.setListener(new SlidingMenuView.MenuListener() {
+            @Override
+            public void onMenuOpened() {
+                // Dim living background when menu is open
+                livingBackground.setOpacity(0.2f);
+            }
+
+            @Override
+            public void onMenuClosed() {
+                // Restore living background opacity
+                livingBackground.setOpacity(0.5f);
+            }
+
+            @Override
+            public void onPageChanged(SlidingMenuView.MenuPage page) {
+                Log.d(TAG, "Menu page changed to: " + page);
+            }
+        });
+    }
+
+    private void toggleMenu() {
+        if (slidingMenu.isOpen()) {
+            slidingMenu.closeMenu();
+        } else {
+            slidingMenu.openMenu();
+        }
+    }
+
     private void showTypingIndicator(boolean show) {
-        binding.typingIndicator.setVisibility(show ? View.VISIBLE : View.GONE);
+        LinearLayout typingIndicator = binding.getRoot().findViewById(R.id.typingIndicator);
+        if (show) {
+            typingIndicator.setVisibility(View.VISIBLE);
+            typingSpinner.show();
+            // Apply pulse animation
+            typingIndicator.startAnimation(android.view.animation.AnimationUtils.loadAnimation(
+                this, R.anim.typing_indicator_pulse));
+        } else {
+            typingSpinner.hide();
+            typingIndicator.setVisibility(View.GONE);
+            typingIndicator.clearAnimation();
+        }
     }
 
     private void showError(String error) {
@@ -257,6 +328,32 @@ public class MainActivity extends AppCompatActivity implements ArulaNative.Arula
         if (requestCode == REQUEST_SETTINGS && resultCode == RESULT_OK) {
             // Configuration changed, reinitialize
             initializeArula();
+        }
+    }
+
+    // Menu click handlers
+    public void onConversationsClick(View v) {
+        slidingMenu.navigateToPage(SlidingMenuView.MenuPage.CONVERSATIONS);
+    }
+
+    public void onSettingsClick(View v) {
+        slidingMenu.navigateToPage(SlidingMenuView.MenuPage.SETTINGS);
+    }
+
+    public void onAboutClick(View v) {
+        slidingMenu.navigateToPage(SlidingMenuView.MenuPage.ABOUT);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (slidingMenu.isOpen()) {
+            if (slidingMenu.getCurrentPage() != SlidingMenuView.MenuPage.MAIN) {
+                slidingMenu.navigateToMain();
+            } else {
+                slidingMenu.closeMenu();
+            }
+        } else {
+            super.onBackPressed();
         }
     }
 
