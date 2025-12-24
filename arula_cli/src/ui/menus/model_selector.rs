@@ -106,8 +106,13 @@ impl ModelSelector {
             vec!["⚡ Loading models...".to_string()]
         };
 
+        // Always add "Custom Model..." option at the beginning for all providers
+        // This allows users to enter any model name they want
+        let mut all_models_with_custom = vec!["✏️ Custom Model...".to_string()];
+        all_models_with_custom.extend(final_models);
+
         // Handle empty models list
-        if final_models.is_empty() {
+        if all_models_with_custom.is_empty() {
             output.print_system(&format!(
                 "⚠️ No {} models available. Try selecting the provider again to fetch models.",
                 provider
@@ -115,10 +120,18 @@ impl ModelSelector {
             return Ok(());
         }
 
-        let current_idx = final_models
+        // Find current model index (skip custom option)
+        let current_idx = all_models_with_custom
             .iter()
             .position(|m| m == &current_model)
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                // If current model not in list, default to first real model (index 1) or custom (index 0)
+                if all_models_with_custom.len() > 1 {
+                    1
+                } else {
+                    0
+                }
+            });
 
         // Clear any pending events in the buffer
         std::thread::sleep(Duration::from_millis(20));
@@ -132,7 +145,7 @@ impl ModelSelector {
         // Create a temporary selection for model with search support
         let mut selected_idx = current_idx;
         let mut search_query = String::new();
-        let mut all_models = final_models.clone();
+        let mut all_models = all_models_with_custom.clone(); // Use models with custom option
         let mut loading_spinner = all_models.len() == 1
             && (all_models[0].contains("Loading")
                 || all_models[0].contains("⚡")
@@ -200,8 +213,11 @@ impl ModelSelector {
                                 // Still in loading state
                             } else {
                                 // Real models loaded! Update immediately and clear screen once
-                                if all_models != models {
-                                    all_models = models;
+                                // Add custom option to fetched models
+                                let mut with_custom = vec!["✏️ Custom Model...".to_string()];
+                                with_custom.extend(models);
+                                if all_models != with_custom {
+                                    all_models = with_custom;
                                     loading_spinner = false;
                                     needs_clear = true; // Clear once when models finish loading
                                 }
@@ -216,20 +232,34 @@ impl ModelSelector {
                     if loading_spinner {
                         let spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                         let spinner = spinner_chars[(spinner_counter / 2) % spinner_chars.len()];
-                        all_models = vec![format!("{} Fetching models...", spinner)];
+                        // Keep custom option during loading
+                        all_models = vec![
+                            "✏️ Custom Model...".to_string(),
+                            format!("{} Fetching models...", spinner)
+                        ];
                     }
                 }
             }
 
-            // Filter models based on search query
+            // Filter models based on search query (always keep custom option first)
             let filtered_models: Vec<String> = if search_query.is_empty() {
                 all_models.clone()
             } else {
-                all_models
-                    .iter()
-                    .filter(|model| model.to_lowercase().contains(&search_query.to_lowercase()))
-                    .cloned()
-                    .collect()
+                let mut result = vec![];
+                // Always keep custom option first
+                if let Some(custom_option) = all_models.first().filter(|m| m.contains("Custom Model")) {
+                    result.push(custom_option.clone());
+                }
+                // Then add filtered results
+                for model in &all_models {
+                    if model.contains("Custom Model") {
+                        continue; // Skip, already added first
+                    }
+                    if model.to_lowercase().contains(&search_query.to_lowercase()) {
+                        result.push(model.clone());
+                    }
+                }
+                result
             };
 
             // Update selected_idx to be within bounds of filtered models
@@ -333,11 +363,33 @@ impl ModelSelector {
                             }
                             KeyCode::Enter => {
                                 if !filtered_models.is_empty() {
-                                    app.set_model(&filtered_models[selected_idx]);
-                                    output.print_system(&format!(
-                                        "✅ Model set to: {}",
-                                        filtered_models[selected_idx]
-                                    ))?;
+                                    let selected = &filtered_models[selected_idx];
+                                    // Check if user selected "Custom Model..." option
+                                    if selected.contains("Custom Model") {
+                                        // Clear screen before showing input dialog
+                                        stdout().execute(terminal::Clear(terminal::ClearType::All))?;
+                                        stdout().flush()?;
+                                        // Show text input for custom model name
+                                        let current_model = app.config.get_model();
+                                        if let Some(custom_model) = self.show_text_input(
+                                            "Enter custom model name",
+                                            &current_model,
+                                            output
+                                        )? {
+                                            app.set_model(&custom_model);
+                                            output.print_system(&format!("✅ Model set to: {}", custom_model))?;
+                                        }
+                                        // Clear screen before exiting
+                                        stdout().execute(terminal::Clear(terminal::ClearType::All))?;
+                                        stdout().flush()?;
+                                        break;
+                                    } else {
+                                        app.set_model(selected);
+                                        output.print_system(&format!(
+                                            "✅ Model set to: {}",
+                                            selected
+                                        ))?;
+                                    }
                                 }
                                 // Clear screen before exiting
                                 stdout().execute(terminal::Clear(terminal::ClearType::All))?;

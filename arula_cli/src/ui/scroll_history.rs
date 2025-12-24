@@ -90,8 +90,17 @@ impl HistoryLine {
 
 /// Insert history lines above the inline viewport using scroll regions.
 ///
-/// Inspired by Codex' insert_history: wraps lines to viewport width, limits scroll region above
-/// the viewport, and restores the cursor afterward to avoid desync.
+/// This is inspired by Codex' insert_history implementation. The key insight is that
+/// the viewport area represents the bottom portion of the screen that should NOT scroll.
+/// We set the scroll region to exclude the viewport, then insert lines within that region.
+///
+/// Screen layout:
+/// ┌─Screen──────────────────────────┐
+/// │┌╌Scroll region (1..area.top())╌┐│  <- Lines that scroll (history)
+/// │┆                            ┆│
+/// │└────────────────────────────┘│
+/// │█╌╌╌Viewport area╌╌╌╌╌╌╌╌╌╌╌╌╌┘│  <- Lines that stay fixed (input + status)
+/// └────────────────────────────────┘
 pub fn insert_history_lines(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     screen_width: u16,
@@ -99,25 +108,42 @@ pub fn insert_history_lines(
     viewport_height: u16,
     lines: Vec<Line<'_>>,
 ) -> std::io::Result<()> {
-    let viewport_top = screen_height.saturating_sub(viewport_height);
     let writer = terminal.backend_mut();
+
+    // The viewport is at the bottom of the screen with the given height.
+    // area.top() is the first line of the viewport (0-based).
+    let area_top = screen_height.saturating_sub(viewport_height);
+
+    // Ensure there's at least some space for history (at least 1 line above viewport)
+    let area_top = area_top.max(1);
 
     // Use synchronized update to prevent flicker
     queue!(writer, crossterm::terminal::BeginSynchronizedUpdate)?;
 
-    // Cache cursor position to restore later.
-    let cursor_pos = crossterm::cursor::position().unwrap_or((0, viewport_top));
+    // Get current cursor position to restore later
+    let cursor_pos = crossterm::cursor::position().unwrap_or((0, area_top));
 
     // Clear any current input to prevent interference
     queue!(writer, crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine))?;
 
-    // Limit scroll region to everything above the inline viewport (1-based coordinates).
-    if viewport_top > 0 {
-        queue!(writer, SetScrollRegion(1..viewport_top))?;
-    }
-    // Place cursor at the line above the viewport to start inserting.
-    queue!(writer, MoveTo(0, viewport_top.saturating_sub(1)))?;
+    // Set scroll region to lines above the viewport.
+    // The viewport starts at line 'area_top' (0-based), which is line 'area_top + 1' (1-based).
+    // We want the scroll region to be from line 1 to line 'area_top' (1-based, inclusive),
+    // which excludes the viewport.
+    //
+    // For example, if screen_height = 40 and viewport_height = 2:
+    // - area_top = 38 (0-based), which is line 39 (1-based)
+    // - Viewport occupies lines 38-39 (0-based) or lines 39-40 (1-based)
+    // - Scroll region should be lines 1-38 (1-based) or lines 0-37 (0-based)
+    // - SetScrollRegion(1..39) writes "\x1b[1;39r" which sets lines 1-38 (1-based, inclusive)
+    queue!(writer, SetScrollRegion(1..(area_top + 1)))?;
 
+    // Place cursor at the last line of the scroll region (just above viewport)
+    // This is area_top - 1 in 0-based coordinates
+    let cursor_y = area_top.saturating_sub(1);
+    queue!(writer, MoveTo(0, cursor_y))?;
+
+    // Now insert each line. Each \r\n adds a line and shifts content within scroll region.
     let width = screen_width.max(1) as usize;
     for line in lines.into_iter() {
         let owned = line_to_static(&line);
@@ -171,7 +197,7 @@ pub fn insert_history_lines(
         }
     }
 
-    // Reset region/cursor.
+    // Reset scroll region and restore cursor
     queue!(writer, ResetScrollRegion)?;
     queue!(writer, MoveTo(cursor_pos.0, cursor_pos.1))?;
     queue!(writer, crossterm::terminal::EndSynchronizedUpdate)?;

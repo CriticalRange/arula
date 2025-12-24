@@ -29,6 +29,12 @@ pub use crate::utils::chat::{ChatMessage, MessageType};
 // Agent types
 pub use crate::api::agent::{ContentBlock, Tool, ToolResult, ToolSchema, ToolSchemaBuilder};
 
+// Project context
+pub use crate::utils::project_context::{
+    detect_project, generate_auto_manifest, is_ai_enhanced, manifest_exists,
+    DetectedProject, ProjectType, MANIFEST_MARKER_AI, MANIFEST_MARKER_AUTO,
+};
+
 // Commonly used external crates
 pub use anyhow::{bail, ensure, Context, Result};
 pub use async_trait::async_trait;

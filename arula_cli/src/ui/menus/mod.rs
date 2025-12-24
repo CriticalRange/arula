@@ -12,6 +12,7 @@ pub mod exit_menu;
 pub mod main_menu;
 pub mod model_selector;
 pub mod provider_menu;
+pub mod zai_endpoint_selector;
 
 // Re-export commonly used types for internal convenience
 pub use config_menu::ConfigMenu;

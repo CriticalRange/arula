@@ -7,6 +7,7 @@ use crate::ui::menus::common::{
 use crate::ui::output::OutputHandler;
 use crate::utils::colors::ColorTheme;
 use anyhow::Result;
+use arula_core::prelude::detect_project;
 use crossterm::{
     cursor::MoveTo,
     event::{Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -303,15 +304,16 @@ impl MainMenu {
                     Ok(MenuResult::Continue)
                 }
                 MainMenuItem::InitProject => {
-                    // Clear menu overlay before showing init
+                    // Clear menu overlay before showing init submenu
                     stdout().execute(crossterm::cursor::MoveTo(0, 0))?;
                     stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
                     stdout().flush()?;
 
-                    // Create project manifest
-                    self.handle_project_init(app, output)?;
+                    // Show project init submenu
+                    let result = self.show_project_init_submenu(app, output)?;
 
-                    Ok(MenuResult::Continue)
+                    // Return the result (Continue in most cases)
+                    Ok(result)
                 }
                 MainMenuItem::Conversations => {
                     // Show conversation selector submenu
@@ -598,8 +600,212 @@ impl MainMenu {
         Ok(())
     }
 
+    /// Show project init submenu with options for auto-generate and AI enhance
+    fn show_project_init_submenu(&self, app: &mut App, output: &mut OutputHandler) -> Result<MenuResult> {
+        use arula_core::is_ai_enhanced;
+        use std::path::PathBuf;
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let manifest_path = cwd.join("PROJECT.manifest");
+        let has_manifest = manifest_path.exists();
+        let is_enhanced = has_manifest && is_ai_enhanced(&manifest_path);
+
+        // Menu options based on current state
+        let options = if has_manifest {
+            if is_enhanced {
+                vec![
+                    ("📄 View manifest", "view"),
+                    ("🔄 Re-generate auto manifest", "auto"),
+                    ("✨ AI-enhance again", "ai"),
+                ]
+            } else {
+                vec![
+                    ("📄 View manifest", "view"),
+                    ("✨ AI-enhance manifest", "ai"),
+                    ("🔄 Re-generate auto manifest", "auto"),
+                ]
+            }
+        } else {
+            vec![
+                ("🤖 Auto-generate from project", "auto"),
+                ("✨ AI-enhanced manifest", "ai"),
+            ]
+        };
+
+        // Show simple inline menu
+        self.show_inline_menu(
+            "📝 PROJECT MANIFEST",
+            &options,
+            "↑↓ Navigate • Enter Select • ESC Back",
+            app,
+            output,
+        )
+    }
+
+    /// Show a simple inline menu
+    fn show_inline_menu(
+        &self,
+        title: &str,
+        options: &[(&str, &str)],
+        help: &str,
+        _app: &mut App,
+        output: &mut OutputHandler,
+    ) -> Result<MenuResult> {
+        use arula_core::generate_auto_manifest;
+        use std::fs;
+        use std::path::PathBuf;
+
+        let mut selected = 0;
+
+        // Setup terminal
+        MenuUtils::setup_terminal()?;
+
+        loop {
+            // Clear and render
+            let (cols, rows) = crossterm::terminal::size()?;
+            let menu_width = 50.min(cols.saturating_sub(4));
+            let menu_height = (options.len() + 4) as u16;
+            let start_x = if cols > menu_width {
+                (cols - menu_width) / 2
+            } else {
+                0
+            };
+            let start_y = if rows > menu_height {
+                (rows - menu_height) / 2
+            } else {
+                0
+            };
+
+            // Clear screen
+            stdout().execute(crossterm::cursor::MoveTo(0, 0))?;
+            stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
+
+            // Draw box
+            draw_modern_box(start_x, start_y, menu_width, menu_height)?;
+
+            // Draw title
+            let title_y = start_y + 1;
+            let title_x = if menu_width > title.len() as u16 + 2 {
+                start_x + (menu_width - title.len() as u16) / 2
+            } else {
+                start_x + 1
+            };
+            stdout().queue(MoveTo(title_x, title_y))?;
+            stdout().queue(Print(ColorTheme::primary().bold().apply_to(title)))?;
+
+            // Draw options
+            for (i, (label, _key)) in options.iter().enumerate() {
+                let y = start_y + 3 + i as u16;
+                if i == selected {
+                    draw_selected_item(start_x, y, menu_width, label)?;
+                } else {
+                    stdout().queue(MoveTo(start_x + 4, y))?;
+                    stdout().queue(SetForegroundColor(crossterm::style::Color::AnsiValue(
+                        crate::utils::colors::MISC_ANSI,
+                    )))?;
+                    stdout().queue(Print(*label))?;
+                    stdout().queue(ResetColor)?;
+                }
+            }
+
+            // Draw help
+            let help_y = start_y + menu_height - 1;
+            stdout().queue(MoveTo(start_x + 2, help_y))?;
+            stdout().queue(SetForegroundColor(crossterm::style::Color::AnsiValue(
+                crate::utils::colors::AI_HIGHLIGHT_ANSI,
+            )))?;
+            stdout().queue(Print(help))?;
+            stdout().queue(ResetColor)?;
+
+            stdout().flush()?;
+
+            // Handle input
+            if crossterm::event::poll(Duration::from_millis(100))? {
+                match crossterm::event::read()? {
+                    Event::Key(key) => {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match key.code {
+                            KeyCode::Up => {
+                                selected = selected.saturating_sub(1);
+                            }
+                            KeyCode::Down => {
+                                if selected < options.len() - 1 {
+                                    selected += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                let (_, key) = options[selected];
+                                match key {
+                                    "auto" => {
+                                        // Auto-generate manifest
+                                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                                        if let Some(project) = detect_project(&cwd) {
+                                            let manifest_content = generate_auto_manifest(&project);
+                                            let manifest_path = cwd.join("PROJECT.manifest");
+                                            fs::write(&manifest_path, manifest_content)?;
+                                            output.print_system("✓ Auto-generated PROJECT.manifest")?;
+                                        } else {
+                                            output.print_error("Could not detect project type")?;
+                                        }
+                                    }
+                                    "ai" => {
+                                        // AI-enhance - return with pending message
+                                        stdout().execute(MoveTo(0, 0))?;
+                                        stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
+                                        stdout().flush()?;
+                                        MenuUtils::restore_terminal()?;
+                                        return self.handle_project_init(_app, output);
+                                    }
+                                    "view" => {
+                                        // View manifest
+                                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                                        let manifest_path = cwd.join("PROJECT.manifest");
+                                        if let Ok(content) = fs::read_to_string(&manifest_path) {
+                                            output.print_system("--- PROJECT.manifest ---")?;
+                                            for line in content.lines().take(20) {
+                                                println!("  {}", line);
+                                            }
+                                            if content.lines().count() > 20 {
+                                                println!("  ... ({} more lines)", content.lines().count() - 20);
+                                            }
+                                            output.print_system("--- End of manifest ---")?;
+                                            output.print_system("Press any key to continue...")?;
+                                            // Wait for key
+                                            let _ = crossterm::event::read();
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                // Re-render after action
+                                continue;
+                            }
+                            KeyCode::Esc => {
+                                stdout().execute(MoveTo(0, 0))?;
+                                stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
+                                stdout().flush()?;
+                                MenuUtils::restore_terminal()?;
+                                return Ok(MenuResult::Continue);
+                            }
+                            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                                stdout().execute(MoveTo(0, 0))?;
+                                stdout().execute(terminal::Clear(terminal::ClearType::FromCursorDown))?;
+                                stdout().flush()?;
+                                MenuUtils::restore_terminal()?;
+                                return Ok(MenuResult::Continue);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     /// Handle project manifest creation
-    fn handle_project_init(&self, app: &mut App, _output: &mut OutputHandler) -> Result<()> {
+    fn handle_project_init(&self, app: &mut App, _output: &mut OutputHandler) -> Result<MenuResult> {
         // Send a message to AI about creating a PROJECT.manifest
         let init_message = r#"I want to create a PROJECT.manifest file for this project.
 
@@ -627,7 +833,7 @@ Tell me about your project and I'll help create the manifest."#;
         // Store the message in the app to be picked up by the main loop
         app.pending_init_message = Some(init_message.to_string());
 
-        Ok(())
+        Ok(MenuResult::Continue)
     }
 
     /// Reset menu state

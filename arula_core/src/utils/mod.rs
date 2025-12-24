@@ -12,6 +12,7 @@ pub mod error;
 pub mod error_utils;
 pub mod git_state;
 pub mod logger;
+pub mod project_context;
 pub mod time;
 pub mod tool_call;
 
@@ -19,3 +20,4 @@ pub mod tool_call;
 // debug::{is_debug_enabled, debug_print, DebugTimer}
 // error::{ArulaError, ArulaResult, ApiError, ToolError, ResultExt, OptionExt}
 // error_utils::{ErrorContext, api_error, stream_error, network_error}
+// project_context::{detect_project, generate_auto_manifest, is_ai_enhanced, manifest_exists, DetectedProject, ProjectType}

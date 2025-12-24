@@ -20,6 +20,7 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
 use arula_core::app::AiResponse;
+use arula_core::prelude::detect_project;
 use arula_core::App;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -71,6 +72,12 @@ struct AppState {
     last_ai_message: Option<String>,
     last_history_kind: Option<HistoryKind>,
     app: App,
+    /// Conversation starters from AI
+    conversation_starters: Vec<String>,
+    /// Whether starters are being fetched
+    fetching_starters: bool,
+    /// Currently selected starter index (for keyboard navigation)
+    selected_starter: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +106,9 @@ impl AppState {
             last_ai_message: None,
             last_history_kind: None,
             app,
+            conversation_starters: Vec::new(),
+            fetching_starters: false,
+            selected_starter: None,
         }
     }
 
@@ -251,14 +261,24 @@ impl AppState {
         // Clear the input area to prevent artifacts
         f.render_widget(ratatui::widgets::Clear, area);
 
-        // Create input text with prompt
-        let input_text = format!("▶ {}", self.input);
-        let input = Paragraph::new(input_text.as_str())
-            .style(Style::default().fg(RColor::White))
+        // Create input text with styled prompt
+        let prompt_color = if self.is_waiting {
+            RColor::Yellow
+        } else {
+            RColor::Cyan
+        };
+
+        let input_text = Line::from(vec![
+            Span::styled("▶ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD)),
+            Span::styled(&self.input, Style::default().fg(RColor::White)),
+        ]);
+
+        let input = Paragraph::new(input_text)
+            .style(Style::default().fg(RColor::White).bg(RColor::Rgb(12, 12, 16)))
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::TOP)
-                    .border_style(Style::default().fg(RColor::DarkGray))
+                    .border_style(Style::default().fg(RColor::Rgb(80, 80, 80)))
             );
 
         f.render_widget(input, area);
@@ -282,7 +302,9 @@ impl AppState {
     }
 
     fn render_info(&self, f: &mut Frame, area: Rect) {
-        let info = Paragraph::new(self.info_line());
+        // Add a subtle background to the info line
+        let info = Paragraph::new(self.info_line())
+            .style(Style::default().bg(RColor::Rgb(15, 15, 20)).fg(RColor::Rgb(180, 180, 180)));
         f.render_widget(info, area);
     }
 
@@ -300,23 +322,27 @@ impl AppState {
                     name.to_string()
                 };
                 spans.push(Span::styled(
-                    format!("{spinner} Tools "),
-                    Style::default().fg(RColor::Yellow),
+                    format!("{spinner} "),
+                    Style::default().fg(RColor::Yellow).add_modifier(Modifier::BOLD),
                 ));
-                spans.push(Span::styled(label, Style::default().fg(RColor::Yellow)));
+                spans.push(Span::styled("🔧 ", Style::default().fg(RColor::Yellow)));
+                spans.push(Span::styled(label, Style::default().fg(RColor::Rgb(220, 220, 150))));
             } else if !self.thinking_content.is_empty() {
                 let preview = TuiApp::thinking_preview(&self.thinking_content, 32)
                     .unwrap_or_else(|| "Thought...".to_string());
                 spans.push(Span::styled(
-                    format!("{spinner} Thought "),
-                    Style::default().fg(RColor::Magenta),
+                    format!("{spinner} "),
+                    Style::default().fg(RColor::Magenta).add_modifier(Modifier::BOLD),
                 ));
-                spans.push(Span::styled(preview, Style::default().fg(RColor::DarkGray)));
+                spans.push(Span::styled("💭 ", Style::default().fg(RColor::Magenta)));
+                spans.push(Span::styled(preview, Style::default().fg(RColor::Rgb(200, 180, 220)).add_modifier(Modifier::DIM)));
             } else if !self.current_response.is_empty() {
                 spans.push(Span::styled(
-                    format!("{spinner} Responding "),
-                    Style::default().fg(RColor::Cyan),
+                    format!("{spinner} "),
+                    Style::default().fg(RColor::Cyan).add_modifier(Modifier::BOLD),
                 ));
+                spans.push(Span::styled("✨ ", Style::default().fg(RColor::Cyan)));
+                spans.push(Span::styled("AI typing...", Style::default().fg(RColor::Rgb(180, 220, 240))));
                 let preview = self
                     .current_response
                     .lines()
@@ -324,36 +350,58 @@ impl AppState {
                     .unwrap_or("")
                     .to_string();
                 if !preview.is_empty() {
-                    spans.push(Span::styled(preview, Style::default().fg(RColor::Gray)));
+                    let truncated = if preview.len() > 30 {
+                        format!("{}...", &preview[..27])
+                    } else {
+                        preview
+                    };
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(truncated, Style::default().fg(RColor::Rgb(150, 180, 200)).add_modifier(Modifier::DIM)));
                 }
             } else {
                 spans.push(Span::styled(
-                    format!("{spinner} Working"),
-                    Style::default().fg(RColor::Cyan),
+                    format!("{spinner} "),
+                    Style::default().fg(RColor::Cyan).add_modifier(Modifier::BOLD),
                 ));
+                spans.push(Span::styled("⚡ Working", Style::default().fg(RColor::Cyan)));
             }
         } else {
             spans.push(Span::styled(
-                "✓ API ready",
-                Style::default().fg(RColor::Green),
+                "● ",
+                Style::default().fg(RColor::Green).add_modifier(Modifier::BOLD),
             ));
+            spans.push(Span::styled("Ready", Style::default().fg(RColor::Rgb(150, 255, 150)).add_modifier(Modifier::DIM)));
         }
 
-        spans.push(Span::raw("  "));
+        // Separator
+        spans.push(Span::styled(
+            "  │  ",
+            Style::default().fg(RColor::Rgb(60, 60, 60)),
+        ));
 
-        // Model badge (provider omitted for brevity)
+        // Model badge with improved styling
         let model = self.app.config.get_model();
         spans.push(Span::styled(
             model,
             Style::default()
-                .fg(RColor::DarkGray)
-                .add_modifier(Modifier::ITALIC),
+                .fg(RColor::Rgb(100, 140, 180))
+                .add_modifier(Modifier::ITALIC)
+                .add_modifier(Modifier::DIM),
         ));
-        spans.push(Span::raw("  "));
+
+        // Separator
+        spans.push(Span::styled(
+            "  │  ",
+            Style::default().fg(RColor::Rgb(60, 60, 60)),
+        ));
 
         spans.push(Span::styled(
-            "Shift+Tab menu",
-            Style::default().fg(RColor::Gray),
+            "Shift+Tab",
+            Style::default().fg(RColor::Rgb(140, 140, 140)).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " menu",
+            Style::default().fg(RColor::Rgb(100, 100, 100)).add_modifier(Modifier::DIM),
         ));
 
         Line::from(spans)
@@ -381,9 +429,9 @@ impl AppState {
         height.min(max_status_height)
     }
 
-    fn status_lines(&self) -> Vec<Line<'static>> {
+    fn status_lines(&self) -> Vec<Line<'_>> {
         let mut lines = Vec::new();
-        let border = Style::default().fg(RColor::DarkGray);
+        let border = Style::default().fg(RColor::Rgb(100, 100, 120));
 
         if self.is_waiting && !self.active_tools.is_empty() {
             let spinner = ["◐", "◓", "◑", "◒"][self.frame % 4];
@@ -401,25 +449,25 @@ impl AppState {
             spans.push(Span::styled(
                 format!(" {spinner} Tool 1/{} ", active_count),
                 Style::default()
-                    .fg(RColor::Yellow)
+                    .fg(RColor::Rgb(255, 220, 100))
                     .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled("┐ ", border));
             spans.push(Span::styled(
                 label.to_string(),
-                Style::default().fg(RColor::Yellow),
+                Style::default().fg(RColor::Rgb(255, 220, 100)),
             ));
             spans.push(Span::raw("  "));
             if !args_preview.is_empty() {
                 spans.push(Span::styled(
                     args_preview,
-                    Style::default().fg(RColor::Gray),
+                    Style::default().fg(RColor::Rgb(180, 180, 180)),
                 ));
                 spans.push(Span::raw("  "));
             }
             spans.push(Span::styled(
                 format!("{}ms", elapsed_ms),
-                Style::default().fg(RColor::DarkGray),
+                Style::default().fg(RColor::Rgb(120, 120, 120)).add_modifier(Modifier::DIM),
             ));
             lines.push(Line::from(spans));
         }
@@ -434,7 +482,7 @@ impl AppState {
                 spans.push(Span::styled(
                     format!(" {spinner} Thought "),
                     Style::default()
-                        .fg(RColor::Magenta)
+                        .fg(RColor::Rgb(255, 150, 255))
                         .add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::styled("┐", border));
@@ -444,12 +492,12 @@ impl AppState {
                 for line in self.thinking_content.lines().take(5) {
                     lines.push(Line::from(vec![
                         Span::styled("│ ", border),
-                        Span::styled(line, Style::default().fg(RColor::Gray)),
+                        Span::styled(line, Style::default().fg(RColor::Rgb(200, 180, 220))),
                     ]));
                 }
 
                 // Close the box
-                let content_lines = self.thinking_content.lines().count().min(5);
+                let _content_lines = self.thinking_content.lines().count().min(5);
                 let bottom_spans = vec![
                     Span::styled("└", border),
                     Span::styled("──────────────────────────────────────────────────────────", border),
@@ -466,7 +514,7 @@ impl AppState {
                 spans.push(Span::styled(
                     format!(" {spinner} Thought "),
                     Style::default()
-                        .fg(RColor::Magenta)
+                        .fg(RColor::Rgb(255, 150, 255))
                         .add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::styled("┐ ", border));
@@ -478,7 +526,7 @@ impl AppState {
                     preview
                 };
 
-                spans.push(Span::styled(full_preview, Style::default().fg(RColor::Gray)));
+                spans.push(Span::styled(full_preview, Style::default().fg(RColor::Rgb(200, 180, 220)).add_modifier(Modifier::DIM)));
                 lines.push(Line::from(spans));
             }
         }
@@ -492,12 +540,12 @@ impl AppState {
             return;
         }
 
-        // Add a bottom border to separate status from input
+        // Add a bottom border to separate status from input with improved styling
         let status = Paragraph::new(lines)
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::BOTTOM)
-                    .border_style(Style::default().fg(RColor::DarkGray))
+                    .border_style(Style::default().fg(RColor::Rgb(100, 100, 120)))
             );
 
         f.render_widget(status, area);
@@ -587,6 +635,58 @@ impl TuiApp {
             viewport_height,
             state: AppState::new(app, width, height),
         })
+    }
+
+    /// Generate conversation starters based on project context
+    /// This is called when the conversation is empty
+    fn generate_conversation_starters(&mut self) {
+        use std::path::PathBuf;
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+
+        // Check if we have PROJECT.manifest
+        let manifest_path = cwd.join("PROJECT.manifest");
+        let _has_manifest = manifest_path.exists();
+
+        // Generate context-aware starters
+        let starters = if let Some(project) = detect_project(&cwd) {
+            match project.project_type {
+                arula_core::ProjectType::Rust => vec![
+                    "Review and improve code quality".to_string(),
+                    "Run tests and fix any issues".to_string(),
+                    "Add new feature with proper error handling".to_string(),
+                ],
+                arula_core::ProjectType::Node => vec![
+                    "Review dependencies and update outdated packages".to_string(),
+                    "Add tests for critical functions".to_string(),
+                    "Improve error handling and logging".to_string(),
+                ],
+                arula_core::ProjectType::Python => vec![
+                    "Review code for PEP 8 compliance".to_string(),
+                    "Add type hints to improve code clarity".to_string(),
+                    "Write unit tests for core functionality".to_string(),
+                ],
+                arula_core::ProjectType::Go => vec![
+                    "Review code for idiomatic Go patterns".to_string(),
+                    "Add comprehensive error handling".to_string(),
+                    "Write benchmarks for performance".to_string(),
+                ],
+                arula_core::ProjectType::Unknown => vec![
+                    "Explain the project structure".to_string(),
+                    "Suggest improvements to code organization".to_string(),
+                    "Add documentation for key components".to_string(),
+                ],
+            }
+        } else {
+            // Default starters when no project detected
+            vec![
+                "Start a new conversation".to_string(),
+                "Ask about my capabilities".to_string(),
+                "Get help with a task".to_string(),
+            ]
+        };
+
+        self.state.conversation_starters = starters;
     }
 
     fn rebuild_terminal(&mut self, viewport_height: u16) -> Result<()> {
@@ -748,6 +848,11 @@ impl TuiApp {
     pub async fn run(&mut self) -> Result<()> {
         let mut needs_redraw = true;
 
+        // Generate conversation starters on startup (if conversation is empty)
+        if self.state.app.messages.is_empty() && self.state.conversation_starters.is_empty() {
+            self.generate_conversation_starters();
+        }
+
         loop {
             let mut redraw = needs_redraw;
 
@@ -764,23 +869,9 @@ impl TuiApp {
                 }
             }
 
-            // Grow/shrink inline viewport to match current status/input needs.
-            let needed_height = self.required_viewport_height();
-
-            // Only rebuild terminal if there's a significant change
-            if needed_height != self.viewport_height {
-                // Use sync update to prevent flicker
-                execute!(io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
-                self.rebuild_terminal(needed_height)?;
-                execute!(io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
-                redraw = true;
-            }
-            // Keep buffer in sync with terminal size so scrollback stays intact.
-            self.terminal.autoresize()?;
-
-            // Flush pending history BEFORE drawing the viewport
+            // Flush pending history FIRST before any viewport changes to preserve scrollback
             if !self.state.pending_history.is_empty() {
-                // Ensure the scrollback insertion uses the latest terminal size after any resize.
+                // Ensure the scrollback insertion uses the latest terminal size
                 self.terminal.autoresize()?;
 
                 let lines: Vec<_> = self
@@ -800,6 +891,20 @@ impl TuiApp {
                 self.state.pending_history.clear();
                 redraw = true;
             }
+
+            // Now grow/shrink inline viewport to match current status/input needs.
+            let needed_height = self.required_viewport_height();
+
+            // Only rebuild terminal if there's a significant change
+            if needed_height != self.viewport_height {
+                // Use sync update to prevent flicker
+                execute!(io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
+                self.rebuild_terminal(needed_height)?;
+                execute!(io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
+                redraw = true;
+            }
+            // Keep buffer in sync with terminal size so scrollback stays intact.
+            self.terminal.autoresize()?;
 
             // Check for pending init message and send it
             if let Some(init_message) = self.state.app.pending_init_message.take() {
@@ -833,9 +938,34 @@ impl TuiApp {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 return Ok(());
                             }
+                            // Ctrl+1/2/3: Send conversation starter messages
+                            KeyCode::Char('1') | KeyCode::Char('2') | KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if !self.state.conversation_starters.is_empty() {
+                                    let idx = match key.code {
+                                        KeyCode::Char('1') => 0,
+                                        KeyCode::Char('2') => 1,
+                                        KeyCode::Char('3') => 2,
+                                        _ => 0,
+                                    };
+                                    if let Some(starter) = self.state.conversation_starters.get(idx) {
+                                        self.state.input = starter.clone();
+                                        self.state.input_cursor = self.state.input.chars().count();
+                                        // Auto-submit the message
+                                        self.submit_message().await?;
+                                        redraw = true;
+                                    }
+                                }
+                            }
                             KeyCode::Enter => {
                                 if !self.state.input.is_empty() && !self.state.is_waiting {
                                     self.submit_message().await?;
+                                    redraw = true;
+                                }
+                            }
+                            KeyCode::Char('t') => {
+                                // Toggle thinking bubble expansion
+                                if !self.state.thinking_content.is_empty() {
+                                    self.state.thinking_expanded = !self.state.thinking_expanded;
                                     redraw = true;
                                 }
                             }
@@ -900,13 +1030,6 @@ impl TuiApp {
                                 let result = menu.show(&mut self.state.app, &mut output)?;
                                 self.handle_menu_result(result)?;
                                 redraw = true;
-                            }
-                            KeyCode::Char('t') => {
-                                // Toggle thinking bubble expansion
-                                if !self.state.thinking_content.is_empty() {
-                                    self.state.thinking_expanded = !self.state.thinking_expanded;
-                                    redraw = true;
-                                }
                             }
                             _ => {}
                         }

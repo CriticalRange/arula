@@ -8,6 +8,7 @@ use crate::ui::menus::common::{
 use crate::ui::menus::dialogs::Dialogs;
 use crate::ui::menus::model_selector::ModelSelector;
 use crate::ui::menus::provider_menu::ProviderMenu;
+use crate::ui::menus::zai_endpoint_selector::ZaiEndpointSelector;
 use crate::ui::output::OutputHandler;
 use anyhow::Result;
 use console::style;
@@ -26,6 +27,7 @@ pub enum ConfigMenuItem {
     AIModel,
     APIUrl,
     APIKey,
+    ZaiEndpoint,
     ThinkingMode,
     WebSearch,
     OllamaTools,
@@ -44,7 +46,7 @@ impl ConfigMenuItem {
         ]
     }
 
-    /// Get items based on current provider (some items only show for specific providers)
+    /// Get items based on current provider
     pub fn for_provider(provider: &str) -> Vec<Self> {
         let mut items = vec![
             ConfigMenuItem::AIProvider,
@@ -54,6 +56,11 @@ impl ConfigMenuItem {
             ConfigMenuItem::ThinkingMode,
             ConfigMenuItem::WebSearch,
         ];
+
+        // Add Z.AI endpoint for z.ai providers
+        if provider.to_lowercase().contains("z.ai") {
+            items.insert(4, ConfigMenuItem::ZaiEndpoint);
+        }
 
         // Only show OllamaTools for Ollama provider
         if provider.to_lowercase() == "ollama" {
@@ -69,6 +76,7 @@ impl ConfigMenuItem {
             ConfigMenuItem::AIModel => "AI Model",
             ConfigMenuItem::APIUrl => "API URL",
             ConfigMenuItem::APIKey => "API Key",
+            ConfigMenuItem::ZaiEndpoint => "Z.AI Endpoint",
             ConfigMenuItem::ThinkingMode => "Thinking Mode",
             ConfigMenuItem::WebSearch => "Web Search",
             ConfigMenuItem::OllamaTools => "Ollama Tools",
@@ -81,6 +89,7 @@ impl ConfigMenuItem {
             ConfigMenuItem::AIModel => "Choose AI model to use",
             ConfigMenuItem::APIUrl => "Set custom API endpoint URL",
             ConfigMenuItem::APIKey => "Configure API authentication key",
+            ConfigMenuItem::ZaiEndpoint => "Select Z.AI API endpoint (Coding Plan/Anthropic)",
             ConfigMenuItem::ThinkingMode => "Toggle thinking mode (show AI reasoning)",
             ConfigMenuItem::WebSearch => "Toggle web search provider (DuckDuckGo/Z.AI)",
             ConfigMenuItem::OllamaTools => "Enable/disable tool calling for Ollama models",
@@ -95,6 +104,7 @@ pub struct ConfigMenu {
     provider_menu: ProviderMenu,
     model_selector: ModelSelector,
     api_key_selector: ApiKeySelector,
+    zai_endpoint_selector: ZaiEndpointSelector,
     dialogs: Dialogs,
 }
 
@@ -112,6 +122,7 @@ impl ConfigMenu {
             provider_menu: ProviderMenu::new(),
             model_selector: ModelSelector::new(),
             api_key_selector: ApiKeySelector::new(),
+            zai_endpoint_selector: ZaiEndpointSelector::new(),
             dialogs: Dialogs::new(),
         }
     }
@@ -308,6 +319,19 @@ impl ConfigMenu {
 
         let tools_enabled = config.get_tools_enabled();
         let is_ollama = config.active_provider.to_lowercase() == "ollama";
+        let is_zai = config.active_provider.to_lowercase().contains("z.ai");
+
+        // Get Z.AI endpoint name for display
+        let zai_endpoint_name = if is_zai {
+            config
+                .get_active_provider_config()
+                .and_then(|c| c.api_url.as_ref())
+                .and_then(|url| arula_core::utils::config::ZaiEndpoint::by_url(url))
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "Default".to_string())
+        } else {
+            String::new()
+        };
 
         let mut display_options = vec![
             format!(
@@ -339,6 +363,14 @@ impl ConfigMenu {
                     "••••••••"
                 }
             ),
+        ];
+
+        // Add Z.AI endpoint for Z.AI providers
+        if is_zai {
+            display_options.push(format!("Z.AI Endpoint: {}", zai_endpoint_name));
+        }
+
+        display_options.extend(vec![
             format!(
                 "Thinking: {}",
                 if thinking_enabled {
@@ -356,7 +388,7 @@ impl ConfigMenu {
                 },
                 web_search_provider
             ),
-        ];
+        ]);
 
         // Add Ollama Tools option only for Ollama provider
         if is_ollama {
@@ -485,6 +517,16 @@ impl ConfigMenu {
                     (Some("Not set".to_string()), item.description().to_string())
                 }
             }
+            ConfigMenuItem::ZaiEndpoint => {
+                let endpoint_name = app
+                    .config
+                    .get_active_provider_config()
+                    .and_then(|c| c.api_url.as_ref())
+                    .and_then(|url| arula_core::utils::config::ZaiEndpoint::by_url(url))
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| "Default".to_string());
+                (Some(endpoint_name), item.description().to_string())
+            }
             ConfigMenuItem::ThinkingMode => {
                 let enabled = app
                     .config
@@ -573,6 +615,13 @@ impl ConfigMenu {
                 }
                 ConfigMenuItem::APIKey => {
                     self.api_key_selector.show(app, output)?;
+                    while crossterm::event::poll(Duration::from_millis(0))? {
+                        let _ = crossterm::event::read()?;
+                    }
+                    Ok(MenuAction::Continue)
+                }
+                ConfigMenuItem::ZaiEndpoint => {
+                    self.zai_endpoint_selector.show(app, output)?;
                     while crossterm::event::poll(Duration::from_millis(0))? {
                         let _ = crossterm::event::read()?;
                     }
